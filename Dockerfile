@@ -1,14 +1,13 @@
-# Base Image
 FROM nginx:alpine
 
-# Remove default content
+# Remove default Nginx index.html
 RUN rm -rf /usr/share/nginx/html/*
 
-# Copy Expo Web build folder
-COPY web-build/ /usr/share/nginx/html
+# COPY folder dist to nginx html folder
+COPY dist/ /usr/share/nginx/html
 
 # Expose port 80
 EXPOSE 80
 
-# Start Nginx
+# Run Nginx
 CMD ["nginx", "-g", "daemon off;"]
