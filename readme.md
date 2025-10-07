@@ -10,3 +10,5 @@ npx expo export --platform web
 docker build -t buddham_ai_expo .
 
 docker-compose up
+
+npx expo export --platform web && docker build -t buddham_ai_expo . && docker-compose up -d

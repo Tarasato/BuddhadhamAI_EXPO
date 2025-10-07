@@ -58,11 +58,11 @@ const storage = {
   async getItem(key) {
     try {
       if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key);
-    } catch {}
+    } catch { }
     if (Platform.OS === "web") {
       try {
         return window.localStorage.getItem(key);
-      } catch {}
+      } catch { }
     }
     return null;
   },
@@ -72,11 +72,11 @@ const storage = {
         await AsyncStorage.setItem(key, val);
         return;
       }
-    } catch {}
+    } catch { }
     if (Platform.OS === "web") {
       try {
         window.localStorage.setItem(key, val);
-      } catch {}
+      } catch { }
     }
   },
   async removeItem(key) {
@@ -85,11 +85,11 @@ const storage = {
         await AsyncStorage.removeItem(key);
         return;
       }
-    } catch {}
+    } catch { }
     if (Platform.OS === "web") {
       try {
         window.localStorage.removeItem(key);
-      } catch {}
+      } catch { }
     }
   },
 };
@@ -113,7 +113,7 @@ const formatTS = (d) =>
  *  ============================== */
 export default function ChatScreen({ navigation }) {
   /** ---------- Socket ---------- */
-  const [socket, setSocket] = useState(null);
+  const [socket, setSocket] = useState(io(SOCKET_URL));
   const [showStop, setShowStop] = useState(false);
   const stopTimerRef = useRef(null);
 
@@ -299,8 +299,6 @@ export default function ChatScreen({ navigation }) {
 
   /** ---------- Socket ---------- */
   useEffect(() => {
-    const socket = io(SOCKET_URL);
-    setSocket(socket);
 
     socket.on("connect", () => {
       console.log("✅ Socket connected! ID:", socket.id);
@@ -310,48 +308,48 @@ export default function ChatScreen({ navigation }) {
       console.error("❌ Socket connect error:", err.message);
     });
 
-    socket.on("message", (msgObj) => {
-      const matchesTask =
-        !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
-      const matchesChat =
-        !!msgObj?.chatId && msgObj.chatId === selectedChatIdRef.current;
+    // socket.on("debug", (msgObj) => {
+    //   const matchesTask =
+    //     !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
+    //   const matchesChat =
+    //     !!msgObj?.chatId && msgObj.chatId === selectedChatIdRef.current;
 
-      let accept = matchesTask || matchesChat;
-      if (!accept && awaitingRef.current) accept = true;
-      if (!accept) return;
+    //   let accept = matchesTask || matchesChat;
+    //   if (!accept && awaitingRef.current) accept = true;
+    //   if (!accept) return;
 
-      const finalText =
-        typeof msgObj === "string"
-          ? msgObj
-          : msgObj?.text ?? JSON.stringify(msgObj);
+    //   const finalText =
+    //     typeof msgObj === "string"
+    //       ? msgObj
+    //       : msgObj?.text ?? JSON.stringify(msgObj);
 
-      if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
-        setCurrentTaskId(msgObj.taskId);
-        upgradePendingBubble(msgObj.taskId);
-      }
+    //   if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
+    //     setCurrentTaskId(msgObj.taskId);
+    //     upgradePendingBubble(msgObj.taskId);
+    //   }
 
-      const tId = msgObj?.taskId || currentTaskIdRef.current;
-      setMessages((prev) => {
-        const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
-        let idx = prev.findIndex((m) => m.id === pendId);
-        if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
+    //   const tId = msgObj?.taskId || currentTaskIdRef.current;
+    //   setMessages((prev) => {
+    //     const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
+    //     let idx = prev.findIndex((m) => m.id === pendId);
+    //     if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
 
-        const newMsg = {
-          id: Date.now().toString(),
-          from: "bot",
-          text: finalText,
-          time: formatTS(Date.now()),
-        };
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy.splice(idx, 1, newMsg);
-          return copy;
-        }
-        return [...prev, newMsg];
-      });
+    //     const newMsg = {
+    //       id: Date.now().toString(),
+    //       from: "bot",
+    //       text: finalText,
+    //       time: formatTS(Date.now()),
+    //     };
+    //     if (idx >= 0) {
+    //       const copy = [...prev];
+    //       copy.splice(idx, 1, newMsg);
+    //       return copy;
+    //     }
+    //     return [...prev, newMsg];
+    //   });
 
-      hardResetPendingState();
-    });
+    //   hardResetPendingState();
+    // });
 
     socket.on?.("done", (payload) => {
       const matchesTask =
@@ -364,6 +362,75 @@ export default function ChatScreen({ navigation }) {
 
     return () => socket.disconnect();
   }, []);
+
+  useEffect(() => {
+    // 1. ดึงค่า Task ID ที่เป็น String ออกมา
+    const taskId = currentTaskIdRef.current;
+
+    // ตรวจสอบความถูกต้องของ taskId ก่อน
+    if (!taskId) {
+      console.log("Task ID is not defined yet. Skipping socket listener setup.");
+      return;
+    }
+
+    console.log("Setting up listener for task:", `${taskId}`);
+
+    // 2. กำหนด Listener ใหม่ โดยใช้ taskId เป็นชื่อ Event
+    try {
+      socket.on(`${taskId}`, (msgObj) => {
+        const matchesTask =
+          !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
+        const matchesChat =
+          !!msgObj?.chatId && msgObj.chatId === selectedChatIdRef.current;
+
+        let accept = matchesTask || matchesChat;
+        if (!accept && awaitingRef.current) accept = true;
+        if (!accept) return;
+
+        const finalText =
+          typeof msgObj === "string"
+            ? msgObj
+            : msgObj?.text ?? JSON.stringify(msgObj);
+
+        if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
+          setCurrentTaskId(msgObj.taskId);
+          upgradePendingBubble(msgObj.taskId);
+        }
+
+        const tId = msgObj?.taskId || currentTaskIdRef.current;
+        setMessages((prev) => {
+          const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
+          let idx = prev.findIndex((m) => m.id === pendId);
+          if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
+
+          const newMsg = {
+            id: Date.now().toString(),
+            from: "bot",
+            text: finalText,
+            time: formatTS(Date.now()),
+          };
+          if (idx >= 0) {
+            const copy = [...prev];
+            copy.splice(idx, 1, newMsg);
+            return copy;
+          }
+          return [...prev, newMsg];
+        });
+
+        hardResetPendingState();
+      });
+    } catch (e) {
+      console.error("Socket listen error:", e);
+      console.log("Error message:", e?.message || e);
+    }
+
+    // 3. Cleanup Function: ยกเลิกการฟัง Event เก่าเมื่อ Component ถูก Unmount หรือเมื่อ Dependency (taskId) เปลี่ยนไป
+    return () => {
+      console.log("Removing listener for task:", taskId);
+      socket.off(taskId); // ใช้ socket.off() เพื่อยกเลิกการฟัง Event นั้น
+    };
+
+  }, [currentTaskIdRef.current]);
 
   /** ---------- Load chats ---------- */
   const loadUserChats = async () => {
@@ -506,7 +573,7 @@ export default function ChatScreen({ navigation }) {
   /** ---------- Web beforeunload ---------- */
   useEffect(() => {
     if (Platform.OS !== "web") return;
-    const onBeforeUnload = () => {};
+    const onBeforeUnload = () => { };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
@@ -671,7 +738,10 @@ export default function ChatScreen({ navigation }) {
         question: text,
       });
 
-      const taskId =
+      let taskId = resp.taskId;
+      console.log("taskId response:", taskId);
+
+      taskId =
         resp?.taskId ||
         resp?.id ||
         resp?.data?.taskId ||
