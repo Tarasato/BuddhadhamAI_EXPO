@@ -1,0 +1,29 @@
+# pycache
+__pycache__
+
+# Node / build
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Git / system
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+
+# IDE / temp
+.vscode
+.dist
+.idea
+*.swp
+*.swo
+*.log
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# etc
+readme.md
