@@ -41,7 +41,7 @@ export default function RegisterScreen({ navigation }) {
       });
       navigation.replace('Login'); // เสร็จแล้วกลับหน้า Login
     } catch (e) {
-      setError(e?.message || 'สมัครสมาชิกไม่สำเร็จ');
+      setError(e?.response?.data?.message || 'สมัครสมาชิกไม่สำเร็จ');
     } finally {
       setLoading(false);
     }
