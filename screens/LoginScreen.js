@@ -16,15 +16,19 @@
 
     const handleLogin = async () => {
       setError("");
-      const email = userInput.trim();
-      if (!email || !userPassword.trim()) {
+      const userInputData = userInput.trim();
+      if (!userInputData || !userPassword.trim()) {
         setError("กรอกอีเมลและรหัสผ่านให้ครบ");
         return;
       }
 
       setLoading(true);
       try {
-        const { user, message } = await loginApi({ userInput: email, userPassword });
+        const response = await loginApi({ userInput: userInputData, userPassword: userPassword.trim() });
+        console.log("Login Response:", response);
+        const { user, message } = response;
+        console.log("user:", user);
+        console.log("message:", message);
         if (!user?.id && !user?.name) throw new Error(message || "ข้อมูลผู้ใช้ไม่ครบ");
         await login(user);                 // เก็บลง Context + AsyncStorage
         navigation.replace("Chat");        // กลับหน้าแชต
