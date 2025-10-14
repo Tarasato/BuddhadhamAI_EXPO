@@ -9,14 +9,14 @@
 
   export default function LoginScreen({ navigation }) {
     const { login } = useAuth();
-    const [userEmail, setUserEmail] = useState("");
+    const [userInput, setUserInput] = useState("");
     const [userPassword, setUserPassword] = useState("");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
     const handleLogin = async () => {
       setError("");
-      const email = userEmail.trim().toLowerCase();
+      const email = userInput.trim();
       if (!email || !userPassword.trim()) {
         setError("กรอกอีเมลและรหัสผ่านให้ครบ");
         return;
@@ -24,7 +24,7 @@
 
       setLoading(true);
       try {
-        const { user, message } = await loginApi({ userEmail: email, userPassword });
+        const { user, message } = await loginApi({ userInput: email, userPassword });
         if (!user?.id && !user?.name) throw new Error(message || "ข้อมูลผู้ใช้ไม่ครบ");
         await login(user);                 // เก็บลง Context + AsyncStorage
         navigation.replace("Chat");        // กลับหน้าแชต
@@ -51,8 +51,8 @@
           placeholderTextColor="#aaa"
           autoCapitalize="none"
           keyboardType="email-address"
-          value={userEmail}
-          onChangeText={setUserEmail}
+          value={userInput}
+          onChangeText={setUserInput}
         />
         <TextInput
           style={styles.input}

@@ -23,7 +23,7 @@ export default function RegisterScreen({ navigation }) {
     if (!userEmail.trim()) return 'กรุณากรอกอีเมล';
     const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail.trim());
     if (!emailOk) return 'อีเมลไม่ถูกต้อง';
-    if (userPassword.length < 6) return 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร';
+    // if (userPassword.length < 6) return 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร';
     if (userPassword !== confirm) return 'รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน';
     return '';
   };
@@ -37,7 +37,7 @@ export default function RegisterScreen({ navigation }) {
       await registerApi({
         userName: userName.trim(),
         userEmail: userEmail.trim().toLowerCase(),
-        userPassword,
+        userPassword: userPassword.trim(),
       });
       navigation.replace('Login'); // เสร็จแล้วกลับหน้า Login
     } catch (e) {

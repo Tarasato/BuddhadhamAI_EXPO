@@ -7,8 +7,8 @@ export const registerApi = async ({ userName, userEmail, userPassword }) => {
 };
 
 // ล็อกอิน
-export const loginApi = async ({ userEmail, userPassword }) => {
-  const res = await client.post("/login", { userEmail, userPassword });
+export const loginApi = async ({ userInput, userPassword }) => {
+  const res = await client.post("/login", { userInput, userPassword });
   const raw = res.data;              // คาดว่า { message, data }
   const d = raw?.data || raw;        // กันเคสที่ backend ส่งโครงสร้างไม่เหมือนกัน
 
@@ -18,7 +18,7 @@ export const loginApi = async ({ userEmail, userPassword }) => {
     user: {
       id: d?.userId ?? d?.id ?? null,
       name: d?.userName ?? d?.name ?? "",
-      email: d?.userEmail ?? d?.email ?? userEmail,
+      email: d?.userInput ?? d?.email ?? userInput,
       token: d?.token ?? null,
     },
   };
