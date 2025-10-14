@@ -50,6 +50,7 @@ const EXTRA_BOTTOM_GAP = 24;
 
 const SOCKET_URL = process.env.EXPO_PUBLIC_API_URL;
 const STORAGE_PREFIX = "chat_state_v1:";
+const LAST_CHAT_ID_KEY = "last_selected_chat_id";
 
 /** ==============================
  *  Storage helper
@@ -58,11 +59,11 @@ const storage = {
   async getItem(key) {
     try {
       if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key);
-    } catch { }
+    } catch {}
     if (Platform.OS === "web") {
       try {
         return window.localStorage.getItem(key);
-      } catch { }
+      } catch {}
     }
     return null;
   },
@@ -72,11 +73,11 @@ const storage = {
         await AsyncStorage.setItem(key, val);
         return;
       }
-    } catch { }
+    } catch {}
     if (Platform.OS === "web") {
       try {
         window.localStorage.setItem(key, val);
-      } catch { }
+      } catch {}
     }
   },
   async removeItem(key) {
@@ -85,11 +86,11 @@ const storage = {
         await AsyncStorage.removeItem(key);
         return;
       }
-    } catch { }
+    } catch {}
     if (Platform.OS === "web") {
       try {
         window.localStorage.removeItem(key);
-      } catch { }
+      } catch {}
     }
   },
 };
@@ -299,7 +300,6 @@ export default function ChatScreen({ navigation }) {
 
   /** ---------- Socket ---------- */
   useEffect(() => {
-
     socket.on("connect", () => {
       console.log("✅ Socket connected! ID:", socket.id);
     });
@@ -308,54 +308,12 @@ export default function ChatScreen({ navigation }) {
       console.error("❌ Socket connect error:", err.message);
     });
 
-    // socket.on("debug", (msgObj) => {
-    //   const matchesTask =
-    //     !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
-    //   const matchesChat =
-    //     !!msgObj?.chatId && msgObj.chatId === selectedChatIdRef.current;
-
-    //   let accept = matchesTask || matchesChat;
-    //   if (!accept && awaitingRef.current) accept = true;
-    //   if (!accept) return;
-
-    //   const finalText =
-    //     typeof msgObj === "string"
-    //       ? msgObj
-    //       : msgObj?.text ?? JSON.stringify(msgObj);
-
-    //   if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
-    //     setCurrentTaskId(msgObj.taskId);
-    //     upgradePendingBubble(msgObj.taskId);
-    //   }
-
-    //   const tId = msgObj?.taskId || currentTaskIdRef.current;
-    //   setMessages((prev) => {
-    //     const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
-    //     let idx = prev.findIndex((m) => m.id === pendId);
-    //     if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
-
-    //     const newMsg = {
-    //       id: Date.now().toString(),
-    //       from: "bot",
-    //       text: finalText,
-    //       time: formatTS(Date.now()),
-    //     };
-    //     if (idx >= 0) {
-    //       const copy = [...prev];
-    //       copy.splice(idx, 1, newMsg);
-    //       return copy;
-    //     }
-    //     return [...prev, newMsg];
-    //   });
-
-    //   hardResetPendingState();
-    // });
-
     socket.on?.("done", (payload) => {
       const matchesTask =
         !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
       const matchesChat =
-        !!payload?.chatId && payload.chatId === selectedChatIdRef.current;
+        !!payload?.chatId &&
+        String(payload.chatId) === String(selectedChatIdRef.current);
       if (!matchesTask && !matchesChat) return;
       hardResetPendingState();
     });
@@ -364,24 +322,23 @@ export default function ChatScreen({ navigation }) {
   }, []);
 
   useEffect(() => {
-    // 1. ดึงค่า Task ID ที่เป็น String ออกมา
     const taskId = currentTaskIdRef.current;
-
-    // ตรวจสอบความถูกต้องของ taskId ก่อน
     if (!taskId) {
-      console.log("Task ID is not defined yet. Skipping socket listener setup.");
+      console.log(
+        "Task ID is not defined yet. Skipping socket listener setup."
+      );
       return;
     }
 
     console.log("Setting up listener for task:", `${taskId}`);
 
-    // 2. กำหนด Listener ใหม่ โดยใช้ taskId เป็นชื่อ Event
     try {
       socket.on(`${taskId}`, (msgObj) => {
         const matchesTask =
           !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
         const matchesChat =
-          !!msgObj?.chatId && msgObj.chatId === selectedChatIdRef.current;
+          !!msgObj?.chatId &&
+          String(msgObj.chatId) === String(selectedChatIdRef.current);
 
         let accept = matchesTask || matchesChat;
         if (!accept && awaitingRef.current) accept = true;
@@ -424,40 +381,53 @@ export default function ChatScreen({ navigation }) {
       console.log("Error message:", e?.message || e);
     }
 
-    // 3. Cleanup Function: ยกเลิกการฟัง Event เก่าเมื่อ Component ถูก Unmount หรือเมื่อ Dependency (taskId) เปลี่ยนไป
     return () => {
       console.log("Removing listener for task:", taskId);
-      socket.off(taskId); // ใช้ socket.off() เพื่อยกเลิกการฟัง Event นั้น
+      socket.off(taskId);
     };
-
   }, [currentTaskIdRef.current]);
 
   /** ---------- Load chats ---------- */
   const loadUserChats = async () => {
     if (!user?.id && !user?._id) return;
     setLoadingChats(true);
+
+    
+    const lastSelectedId = await storage.getItem(LAST_CHAT_ID_KEY);
+
     try {
       const list = await getUserChats(user.id || user._id);
+
+      
       const mapped = (list || []).map((c) => ({
-        id: c.chatId || c.id,
+        id: String(c.chatId ?? c.id),
         title: c.chatHeader || "แชต",
       }));
       setChats(mapped);
 
       if (mapped.length === 0) {
+       
         const created = await createChat({
           userId: user.id || user._id,
           chatHeader: "แชตใหม่",
         });
-        const newChatId = created.chatId || created.id;
+        const newChatId = String(created.chatId ?? created.id);
         const newChats = [
           { id: newChatId, title: created.chatHeader || "แชตใหม่" },
         ];
         setChats(newChats);
         setSelectedChatId(newChatId);
-        setMessages([]);
       } else {
-        setSelectedChatId(mapped[0].id);
+       
+        const lastIdIsValid =
+          !!lastSelectedId &&
+          mapped.some((c) => String(c.id) === String(lastSelectedId));
+
+        if (lastIdIsValid) {
+          setSelectedChatId(String(lastSelectedId));
+        } else {
+          setSelectedChatId(String(mapped[0].id));
+        }
       }
     } catch (err) {
       console.error("loadUserChats error:", err);
@@ -527,6 +497,13 @@ export default function ChatScreen({ navigation }) {
 
   /** ---------- Lifecycle ---------- */
   useEffect(() => {
+    if (selectedChatId) {
+     
+      storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
+    }
+  }, [selectedChatId]);
+
+  useEffect(() => {
     if (!user) {
       setChats([]);
       setSelectedChatId(null);
@@ -557,7 +534,7 @@ export default function ChatScreen({ navigation }) {
       };
 
       await storage.setItem(
-        STORAGE_PREFIX + selectedChatId,
+        STORAGE_PREFIX + String(selectedChatId),
         JSON.stringify(data)
       );
     })();
@@ -573,7 +550,7 @@ export default function ChatScreen({ navigation }) {
   /** ---------- Web beforeunload ---------- */
   useEffect(() => {
     if (Platform.OS !== "web") return;
-    const onBeforeUnload = () => { };
+    const onBeforeUnload = () => {};
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
@@ -618,11 +595,11 @@ export default function ChatScreen({ navigation }) {
 
     try {
       await apiDeleteChat(id);
-      setChats((prev) => prev.filter((c) => c.id !== id));
-      if (selectedChatId === id) {
+      setChats((prev) => prev.filter((c) => String(c.id) !== String(id)));
+      if (String(selectedChatId) === String(id)) {
         if (chats.length > 1) {
-          const next = chats.find((c) => c.id !== id);
-          setSelectedChatId(next?.id || null);
+          const next = chats.find((c) => String(c.id) !== String(id));
+          setSelectedChatId(next ? String(next.id) : null);
         } else {
           setSelectedChatId(null);
           setMessages([]);
@@ -635,8 +612,8 @@ export default function ChatScreen({ navigation }) {
   };
 
   const startRenameInline = (id) => {
-    const current = chats.find((c) => c.id === id);
-    setEditingId(id);
+    const current = chats.find((c) => String(c.id) === String(id));
+    setEditingId(String(id));
     setEditingText(current?.title || "");
     closeItemMenu();
   };
@@ -656,7 +633,9 @@ export default function ChatScreen({ navigation }) {
     }
     try {
       await apiEditChat(id, { chatHeader: title });
-      setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
+      setChats((prev) =>
+        prev.map((c) => (String(c.id) === String(id) ? { ...c, title } : c))
+      );
       setEditingId(null);
       setEditingText("");
     } catch (e) {
@@ -678,8 +657,11 @@ export default function ChatScreen({ navigation }) {
         userId: user?.id || user?._id,
         chatHeader: "แชตใหม่",
       });
-      const newChatId = created.chatId || created.id;
-      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
+      const newChatId = String(created.chatId ?? created.id);
+      const item = {
+        id: newChatId,
+        title: created.chatHeader || "แชตใหม่",
+      };
       setChats((prev) => [item, ...prev]);
       setSelectedChatId(newChatId);
       setMessages([]);
@@ -720,7 +702,7 @@ export default function ChatScreen({ navigation }) {
 
     if (selectedChatId) {
       storage.setItem(
-        STORAGE_PREFIX + selectedChatId,
+        STORAGE_PREFIX + String(selectedChatId),
         JSON.stringify({
           sending: true,
           currentTaskId: null,
@@ -738,15 +720,7 @@ export default function ChatScreen({ navigation }) {
         question: text,
       });
 
-      let taskId = resp.taskId;
-      console.log("taskId response:", taskId);
-
-      taskId =
-        resp?.taskId ||
-        resp?.id ||
-        resp?.data?.taskId ||
-        resp?.data?.id ||
-        null;
+      let taskId = resp?.taskId ?? resp?.id ?? resp?.data?.taskId ?? resp?.data?.id ?? null;
       setCurrentTaskId(taskId);
 
       const qId =
@@ -762,7 +736,7 @@ export default function ChatScreen({ navigation }) {
 
       if (selectedChatId) {
         storage.setItem(
-          STORAGE_PREFIX + selectedChatId,
+          STORAGE_PREFIX + String(selectedChatId),
           JSON.stringify({
             sending: true,
             currentTaskId: taskId,
@@ -824,7 +798,7 @@ export default function ChatScreen({ navigation }) {
     const chatId = selectedChatIdRef.current;
     if (chatId) {
       storage.setItem(
-        STORAGE_PREFIX + chatId,
+        STORAGE_PREFIX + String(chatId),
         JSON.stringify({ sending: false, savedAt: Date.now() })
       );
     }
@@ -853,17 +827,29 @@ export default function ChatScreen({ navigation }) {
                   ? styles.userMessageText
                   : styles.botMessageText,
               strong:
-                item.from === "user" ? { color: "white" } : { color: "#ffffffff" },
+                item.from === "user"
+                  ? { color: "white" }
+                  : { color: "#ffffffff" },
               em:
-                item.from === "user" ? { color: "white" } : { color: "#ffffffff" },
+                item.from === "user"
+                  ? { color: "white" }
+                  : { color: "#ffffffff" },
               code_block:
                 item.from === "user"
                   ? { color: "white", backgroundColor: "#333" }
                   : { color: "#ffffffff", backgroundColor: "#333" },
               blockquote:
                 item.from === "user"
-                  ? { color: "white", backgroundColor: "#333", fontStyle: "italic" }
-                  : { color: "#ffffffff", backgroundColor: "#333", fontStyle: "italic" },
+                  ? {
+                      color: "white",
+                      backgroundColor: "#333",
+                      fontStyle: "italic",
+                    }
+                  : {
+                      color: "#ffffffff",
+                      backgroundColor: "#333",
+                      fontStyle: "italic",
+                    },
             }}
           >
             {item.text}
@@ -893,7 +879,10 @@ export default function ChatScreen({ navigation }) {
             {user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}
           </Text>
           <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <TouchableOpacity onPress={toggleSidebar} style={{ paddingLeft: 8 }}>
+            <TouchableOpacity
+              onPress={toggleSidebar}
+              style={{ paddingLeft: 8 }}
+            >
               <Icon name="close" size={24} color="#333" />
             </TouchableOpacity>
           </View>
@@ -906,7 +895,7 @@ export default function ChatScreen({ navigation }) {
             </View>
           ) : (
             chats.map((chat) => {
-              const isEditing = editingId === chat.id;
+              const isEditing = String(editingId) === String(chat.id);
               return (
                 <View key={chat.id} style={styles.sidebarItemRow}>
                   {isEditing ? (
@@ -940,7 +929,7 @@ export default function ChatScreen({ navigation }) {
                       <TouchableOpacity
                         style={{ flex: 1, minWidth: 0 }}
                         onPress={() => {
-                          setSelectedChatId(chat.id);
+                          setSelectedChatId(String(chat.id));
                           closeItemMenu();
                         }}
                       >
@@ -948,7 +937,9 @@ export default function ChatScreen({ navigation }) {
                           numberOfLines={1}
                           style={[
                             styles.sidebarItemText,
-                            selectedChatId === chat.id && { fontWeight: "bold" },
+                            String(selectedChatId) === String(chat.id) && {
+                              fontWeight: "bold",
+                            },
                           ]}
                         >
                           {chat.title}
@@ -1039,13 +1030,25 @@ export default function ChatScreen({ navigation }) {
           <View style={styles.background}>
             {/* ชั้นพื้นหลัง absolute ที่จัดกึ่งกลางรูปเท่านั้น */}
             <View style={styles.bgCenterWrap} pointerEvents="none">
-              <Image source={buddhadhamBG} style={styles.bgImage} resizeMode="contain" />
+              <Image
+                source={buddhadhamBG}
+                style={styles.bgImage}
+                resizeMode="contain"
+              />
             </View>
 
             {user && loadingHistory ? (
-              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+              <View
+                style={{
+                  flex: 1,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
                 <ActivityIndicator />
-                <Text style={{ color: "#ddd", marginTop: 8 }}>กำลังโหลดประวัติ...</Text>
+                <Text style={{ color: "#ddd", marginTop: 8 }}>
+                  กำลังโหลดประวัติ...
+                </Text>
               </View>
             ) : (
               <FlatList
@@ -1057,7 +1060,9 @@ export default function ChatScreen({ navigation }) {
                   padding: 10,
                   paddingBottom: listBottomPad,
                 }}
-                ListFooterComponent={<View style={{ height: EXTRA_BOTTOM_GAP }} />}
+                ListFooterComponent={
+                  <View style={{ height: EXTRA_BOTTOM_GAP }} />
+                }
                 keyboardShouldPersistTaps="handled"
                 onContentSizeChange={() =>
                   listRef.current?.scrollToEnd({ animated: false })
@@ -1293,16 +1298,14 @@ const styles = StyleSheet.create({
 
   background: { flex: 1 },
 
-  // เลเยอร์พื้นหลัง absolute เต็มหน้าจอ แล้วจัดกึ่งกลาง "เฉพาะรูป"
   bgCenterWrap: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
     alignItems: "center",
   },
-  // ตัวรูป – ใช้ contain เพื่อไม่บิดสัดส่วน
   bgImage: {
-    width: "70%",      // ปรับได้ตามต้องการ (เช่น 60–80%)
-    aspectRatio: 1,    // ถ้ารูปเป็นสี่เหลี่ยมจัตุรัส; ลบออกได้ถ้าไม่ต้องการบังคับ
+    width: "70%",
+    aspectRatio: 1,
     opacity: 0.06,
     transform: [{ translateY: -50 }],
   },

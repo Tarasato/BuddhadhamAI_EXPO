@@ -4,5 +4,7 @@ services:
   buddham_ai_expo:
     build: .
     image: buddham_ai_expo:latest
+    env_file:
+      - .env
     ports:
       - "80:80"
