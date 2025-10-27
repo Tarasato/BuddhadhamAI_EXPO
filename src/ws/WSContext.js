@@ -7,11 +7,12 @@ import React, {
   useState,
 } from "react";
 import { io } from "socket.io-client";
+import { EXPO_PUBLIC_SOCKET_URL } from '@env';
 
 /* ============================================================================
  * CONFIG
  * ========================================================================== */
-const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL;
+const SOCKET_URL = EXPO_PUBLIC_SOCKET_URL;
 
 /** คอนเท็กซ์หลักของ WebSocket */
 const WSContext = createContext(null);

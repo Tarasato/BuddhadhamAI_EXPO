@@ -1,10 +1,11 @@
 import axios from "axios";
+import { EXPO_PUBLIC_API_URL } from '@env';
 
 /**
  * 📡 BASE API URL ที่ใช้ทุก service
  * ดึงมาจาก environment variable ของ Expo
  */
-const API = process.env.EXPO_PUBLIC_API_URL;
+const API = EXPO_PUBLIC_API_URL;
 
 /* ========================================================
  * 🔸 Axios Clients แยกเป็น service แต่ละประเภท
