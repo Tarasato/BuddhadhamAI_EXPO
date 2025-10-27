@@ -1,46 +1,49 @@
-import { io } from "socket.io-client";
-import Markdown from "react-native-markdown-display";
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   Animated,
+  Dimensions,
   FlatList,
   Image,
+  Keyboard,
+  Modal,
   Platform,
+  Pressable,
   SafeAreaView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-  StatusBar,
-  Modal,
-  Dimensions,
-  Pressable,
-  Keyboard,
   TouchableWithoutFeedback,
-  ActivityIndicator,
-  Alert,
+  View,
 } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
+import Markdown from "react-native-markdown-display";
 import Icon from "react-native-vector-icons/Ionicons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { useAuth } from "../src/auth/AuthContext";
+import { useWS } from "../src/ws/WSContext";
+
 import buddhadhamBG from "../assets/buddhadham.png";
 
 import {
-  getUserChats,
+  askQuestion,
+  cancelAsk,
   createChat,
   deleteChat as apiDeleteChat,
-  getChatQna,
-  askQuestion,
   editChat as apiEditChat,
-  cancelAsk,
+  getChatQna,
+  getUserChats,
 } from "../src/api/chat";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/** ==============================
- *  ค่าคงที่/การตั้งค่าทั่วไปของ UI ช่องพิมพ์
- *  ============================== */
+/* =============================================================================
+ * UI CONFIG
+ * ========================================================================== */
 const MIN_H = 40;
 const MAX_H = 140;
 const LINE_H = 20;
@@ -48,14 +51,14 @@ const PAD_V_TOP = 10;
 const PAD_V_BOTTOM = 10;
 const EXTRA_BOTTOM_GAP = 24;
 
-const SOCKET_URL = process.env.EXPO_PUBLIC_API_URL;
 const STORAGE_PREFIX = "chat_state_v1:";
 const LAST_CHAT_ID_KEY = "last_selected_chat_id";
 
-/** ==============================
- *  Storage helper
- *  ============================== */
+/* =============================================================================
+ * STORAGE HELPER (RN + Web fallback)
+ * ========================================================================== */
 const storage = {
+  /** อ่านค่า string จาก AsyncStorage หรือ localStorage */
   async getItem(key) {
     try {
       if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key);
@@ -67,6 +70,7 @@ const storage = {
     }
     return null;
   },
+  /** เซฟค่า string ไป AsyncStorage หรือ localStorage */
   async setItem(key, val) {
     try {
       if (AsyncStorage?.setItem) {
@@ -80,6 +84,7 @@ const storage = {
       } catch {}
     }
   },
+  /** ลบค่าใน AsyncStorage หรือ localStorage */
   async removeItem(key) {
     try {
       if (AsyncStorage?.removeItem) {
@@ -95,9 +100,13 @@ const storage = {
   },
 };
 
-/** ==============================
- *  แปลงเวลาเป็นไทย
- *  ============================== */
+/* =============================================================================
+ * UTILS
+ * ========================================================================== */
+/** บีบ/ขยายความสูงกล่อง input ให้อยู่ในช่วง MIN_H..MAX_H */
+const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
+
+/** ฟอร์แมต timestamp เป็น string ภาษาไทย */
 const formatTS = (d) =>
   new Date(d).toLocaleString("th-TH", {
     year: "numeric",
@@ -109,70 +118,101 @@ const formatTS = (d) =>
     hour12: false,
   });
 
-/** ==============================
- *  Component หลัก
- *  ============================== */
-export default function ChatScreen({ navigation }) {
-  /** ---------- Socket ---------- */
-  const [socket, setSocket] = useState(io(SOCKET_URL));
-  const [showStop, setShowStop] = useState(false);
-  const stopTimerRef = useRef(null);
+/** แปลงค่าเวลาที่รับมา (string/number) ให้เป็น millis (number) ปลอดภัย */
+const toTS = (v) => {
+  if (!v) return 0;
+  const n = typeof v === "number" ? v : Date.parse(v);
+  return Number.isFinite(n) ? n : 0;
+};
 
-  /** ---------- Pending ---------- */
-  const [sending, setSending] = useState(false);
-  const awaitingRef = useRef(false);
+/* =============================================================================
+ * MAIN COMPONENT
+ * ========================================================================== */
+export default function ChatScreen({ navigation }) {
+  /* ----- Contexts ----- */
+  const { on, subscribeTask } = useWS(); // ฟัง event แบบ global และตาม taskId
+  const { user, logout } = useAuth(); // ข้อมูลผู้ใช้/ฟังก์ชันออกจากระบบ
+  const insets = useSafeAreaInsets();
+
+  /* ----- State: Pending/Task ----- */
+  const [sending, setSending] = useState(false); // กำลังรอคำตอบอยู่หรือไม่
+  const awaitingRef = useRef(false); // ref mirror ของ sending (ใช้ใน callback)
   useEffect(() => {
     awaitingRef.current = sending;
   }, [sending]);
 
-  const [currentTaskId, setCurrentTaskId] = useState(null);
-  const currentTaskIdRef = useRef(null);
+  const [showStop, setShowStop] = useState(false); // แสดงปุ่มหยุดเมื่อรอเกิน 450ms
+  const stopTimerRef = useRef(null); // timer ของปุ่มหยุด
+
+  const [currentTaskId, setCurrentTaskId] = useState(null); // task ปัจจุบัน
+  const currentTaskIdRef = useRef(null); // ref mirror ของ task ปัจจุบัน
   useEffect(() => {
     currentTaskIdRef.current = currentTaskId;
   }, [currentTaskId]);
 
-  const [pendingQnaId, setPendingQnaId] = useState(null);
-  const [pendingUserMsgId, setPendingUserMsgId] = useState(null);
+  const [pendingQnaId, setPendingQnaId] = useState(null); // id Q&A ค้าง
+  const [pendingUserMsgId, setPendingUserMsgId] = useState(null); // id ข้อความ user ค้าง
 
-  /** ---------- User/Insets ---------- */
-  const insets = useSafeAreaInsets();
-  const { user, logout } = useAuth();
+  /* ----- State: Chat UI ----- */
+  const [messages, setMessages] = useState([]); // array ของข้อความ (user/bot/pending)
+  const [inputText, setInputText] = useState(""); // ข้อความในช่องพิมพ์
+  const [sidebarOpen, setSidebarOpen] = useState(false); // เปิด/ปิด sidebar
+  const sidebarAnim = useState(new Animated.Value(-250))[0]; // animation slide sidebar
 
-  /** ---------- Messages/UI ---------- */
-  const [messages, setMessages] = useState([]);
-  const [inputText, setInputText] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const sidebarAnim = useState(new Animated.Value(-250))[0];
-
-  /** ---------- Input height ---------- */
+  /* ----- State: Input Height (autosize) ----- */
   const [inputHeight, setInputHeight] = useState(MIN_H);
-  const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
 
-  /** ---------- Web textarea autosize ---------- */
+  /* ----- State: Keyboard shift ----- */
+  const kbBottom = useRef(new Animated.Value(0)).current;
+  const [kbBtmNum, setKbBtmNum] = useState(0);
+
+  /* ----- List reference (auto scroll) ----- */
+  const listRef = useRef(null);
+
+  /* ----- Chats list / selection ----- */
+  const [chats, setChats] = useState([]); // รายชื่อห้องแชต
+  const [selectedChatId, setSelectedChatId] = useState(null); // id แชตที่เลือก
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const selectedChatIdRef = useRef(null); // mirror ของ selectedChatId
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
+
+  /* ----- Popup menu: 3-dots / rename ----- */
+  const [menuFor, setMenuFor] = useState(null); // chatId ที่เรียกเมนู
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 }); // ตำแหน่ง popup
+  const [editingId, setEditingId] = useState(null); // chatId ที่กำลัง rename
+  const [editingText, setEditingText] = useState(""); // ข้อความชื่อใหม่
+
+  /* ----- Persist guard (กันเขียนซ้ำระหว่างโหลด) ----- */
+  const persistSuspendedRef = useRef(false);
+
+  /* ----- Web input autosize (เฉพาะเว็บ) ----- */
   const webRef = useRef(null);
+  /** ปรับความสูง textarea (เว็บ) ตามเนื้อหา */
   const adjustWebHeight = () => {
     if (Platform.OS !== "web") return;
     const el = webRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const next = Math.min(el.scrollHeight, MAX_H);
+    const next = clampH(el.scrollHeight);
     el.style.height = `${next}px`;
     el.style.overflowY = next >= MAX_H ? "auto" : "hidden";
-    setInputHeight(next < MIN_H ? MIN_H : next);
+    setInputHeight(next);
   };
   useEffect(() => {
     if (Platform.OS === "web") adjustWebHeight();
   }, []);
 
-  /** ---------- Keyboard shift ---------- */
-  const kbBottom = useRef(new Animated.Value(0)).current;
-  const [kbBtmNum, setKbBtmNum] = useState(0);
+  /* ----- Keyboard shift (เลื่อนอินพุตตามคีย์บอร์ด) ----- */
   useEffect(() => {
     const showEvt =
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt =
       Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
+    /** เมื่อคีย์บอร์ดขึ้น: ขยับ bottom ของอินพุตขึ้นตามความสูงคีย์บอร์ด */
     const onShow = (e) => {
       const kh = e?.endCoordinates?.height ?? 0;
       const bottom = Math.max(0, kh - (insets.bottom || 0));
@@ -183,6 +223,8 @@ export default function ChatScreen({ navigation }) {
         useNativeDriver: false,
       }).start();
     };
+
+    /** เมื่อคีย์บอร์ดลง: รีเซ็ต bottom ของอินพุต */
     const onHide = (e) => {
       setKbBtmNum(0);
       Animated.timing(kbBottom, {
@@ -200,36 +242,24 @@ export default function ChatScreen({ navigation }) {
     };
   }, [insets.bottom, kbBottom]);
 
-  /** ---------- Auto scroll ---------- */
-  const listRef = useRef(null);
+  /* ----- Auto scroll เมื่อลิสต์เพิ่มรายการใหม่ ----- */
   useEffect(() => {
     requestAnimationFrame(() =>
       listRef.current?.scrollToEnd({ animated: true })
     );
   }, [messages.length]);
 
-  /** ---------- Chats ---------- */
-  const [chats, setChats] = useState([]);
-  const [selectedChatId, setSelectedChatId] = useState(null);
-  const [loadingChats, setLoadingChats] = useState(false);
-  const [loadingHistory, setLoadingHistory] = useState(false);
-
-  const selectedChatIdRef = useRef(null);
-  useEffect(() => {
-    selectedChatIdRef.current = selectedChatId;
-  }, [selectedChatId]);
-
-  /** ---------- Dots menu / rename ---------- */
-  const [menuFor, setMenuFor] = useState(null);
-  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  /* =============================================================================
+   * POPUP MENU HELPERS
+   * ========================================================================== */
+  /** เปิด popup เมนูของห้องแชตที่ id และจดตำแหน่งคลิก */
   const openItemMenu = (id, x, y) => {
     setMenuFor(id);
     setMenuPos({ x, y });
   };
+  /** ปิด popup เมนู */
   const closeItemMenu = () => setMenuFor(null);
-  const [editingId, setEditingId] = useState(null);
-  const [editingText, setEditingText] = useState("");
-
+  /** คำนวณสไตล์ popup ให้ไม่ล้นขอบหน้าจอ */
   const getPopupStyle = () => {
     const { width, height } = Dimensions.get("window");
     const MW = 200,
@@ -242,7 +272,10 @@ export default function ChatScreen({ navigation }) {
     };
   };
 
-  /** ---------- Sidebar ---------- */
+  /* =============================================================================
+   * SIDEBAR
+   * ========================================================================== */
+  /** เปิด/ปิด sidebar ด้วยแอนิเมชัน */
   const toggleSidebar = () => {
     const toOpen = !sidebarOpen;
     Animated.timing(sidebarAnim, {
@@ -252,11 +285,12 @@ export default function ChatScreen({ navigation }) {
     }).start(() => setSidebarOpen(toOpen));
   };
 
-  /** ---------- Persist guard ---------- */
-  const persistSuspendedRef = useRef(false);
-
-  /** ---------- Pending bubble helpers ---------- */
+  /* =============================================================================
+   * PENDING BUBBLE HELPERS
+   * ========================================================================== */
+  /** แปลง taskId -> id ของ bubble pending */
   const pendingBubbleId = (taskId) => `pending-${taskId}`;
+  /** สร้าง bubble pending (ข้อความ “กำลังค้นหาคำตอบ...”) */
   const makePendingBubble = (taskId) => ({
     id: taskId ? pendingBubbleId(taskId) : "pending-generic",
     from: "bot",
@@ -264,6 +298,7 @@ export default function ChatScreen({ navigation }) {
     text: "กำลังค้นหาคำตอบ...",
     time: formatTS(Date.now()),
   });
+  /** เพิ่ม bubble pending (กันซ้ำ) */
   const addPendingBotBubble = (taskId) => {
     const id = taskId ? pendingBubbleId(taskId) : "pending-generic";
     setMessages((prev) => {
@@ -271,6 +306,7 @@ export default function ChatScreen({ navigation }) {
       return [...prev, makePendingBubble(taskId)];
     });
   };
+  /** ลบ bubble pending (จาก taskId เฉพาะ หรืออันแรกที่เจอ) */
   const removePendingBotBubble = (taskId) => {
     setMessages((prev) => {
       if (taskId) {
@@ -284,6 +320,7 @@ export default function ChatScreen({ navigation }) {
       return copy;
     });
   };
+  /** อัปเกรด bubble pending-generic ให้กลายเป็นของ taskId ที่เพิ่งรู้ */
   const upgradePendingBubble = (taskId) => {
     if (!taskId) return;
     setMessages((prev) => {
@@ -298,17 +335,12 @@ export default function ChatScreen({ navigation }) {
     });
   };
 
-  /** ---------- Socket ---------- */
+  /* =============================================================================
+   * WS EVENT HANDLERS
+   * ========================================================================== */
+  /** ฟังสัญญาณ global 'done' จากเซิร์ฟเวอร์ เพื่อเคลียร์ pending */
   useEffect(() => {
-    socket.on("connect", () => {
-      console.log("✅ Socket connected! ID:", socket.id);
-    });
-
-    socket.on("connect_error", (err) => {
-      console.error("❌ Socket connect error:", err.message);
-    });
-
-    socket.on?.("done", (payload) => {
+    const doneHandler = (payload) => {
       const matchesTask =
         !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
       const matchesChat =
@@ -316,89 +348,92 @@ export default function ChatScreen({ navigation }) {
         String(payload.chatId) === String(selectedChatIdRef.current);
       if (!matchesTask && !matchesChat) return;
       hardResetPendingState();
-    });
+    };
 
-    return () => socket.disconnect();
-  }, []);
+    const unbind = on("done", doneHandler);
+    return () => {
+      unbind?.();
+    };
+  }, [on]);
 
+  /** ฟังสัญญาณตาม taskId (ข้อความผลลัพธ์บอท) */
   useEffect(() => {
     const taskId = currentTaskIdRef.current;
-    if (!taskId) {
-      console.log(
-        "Task ID is not defined yet. Skipping socket listener setup."
-      );
-      return;
-    }
+    if (!taskId) return;
 
-    console.log("Setting up listener for task:", `${taskId}`);
+    const handler = (msgObj) => {
+      // ---- คัดกรองว่าเป็น event ของเราจริงไหม ----
+      const matchesTask =
+        !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
+      const matchesChat =
+        !!msgObj?.chatId &&
+        String(msgObj.chatId) === String(selectedChatIdRef.current);
+      let accept = matchesTask || matchesChat;
+      if (!accept && awaitingRef.current) accept = true;
+      if (!accept) return;
 
-    try {
-      socket.on(`${taskId}`, (msgObj) => {
-        const matchesTask =
-          !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
-        const matchesChat =
-          !!msgObj?.chatId &&
-          String(msgObj.chatId) === String(selectedChatIdRef.current);
+      // ---- แปลง payload เป็นข้อความสุดท้ายที่จะเรนเดอร์ ----
+      const finalText =
+        typeof msgObj === "string"
+          ? msgObj
+          : msgObj?.text ?? JSON.stringify(msgObj);
 
-        let accept = matchesTask || matchesChat;
-        if (!accept && awaitingRef.current) accept = true;
-        if (!accept) return;
+      // ถ้า taskId เปลี่ยนกลางทาง -> อัปเดตและอัปเกรดบับเบิล
+      if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
+        setCurrentTaskId(msgObj.taskId);
+        upgradePendingBubble(msgObj.taskId);
+      }
 
-        const finalText =
-          typeof msgObj === "string"
-            ? msgObj
-            : msgObj?.text ?? JSON.stringify(msgObj);
+      // แทนที่ bubble pending ด้วยข้อความจริง
+      const tId = msgObj?.taskId || currentTaskIdRef.current;
+      setMessages((prev) => {
+        const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
+        let idx = prev.findIndex((m) => m.id === pendId);
+        if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
 
-        if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
-          setCurrentTaskId(msgObj.taskId);
-          upgradePendingBubble(msgObj.taskId);
+        const newMsg = {
+          id: Date.now().toString(),
+          from: "bot",
+          text: finalText,
+          time: formatTS(Date.now()),
+        };
+        if (idx >= 0) {
+          const copy = [...prev];
+          copy.splice(idx, 1, newMsg);
+          return copy;
         }
-
-        const tId = msgObj?.taskId || currentTaskIdRef.current;
-        setMessages((prev) => {
-          const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
-          let idx = prev.findIndex((m) => m.id === pendId);
-          if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
-
-          const newMsg = {
-            id: Date.now().toString(),
-            from: "bot",
-            text: finalText,
-            time: formatTS(Date.now()),
-          };
-          if (idx >= 0) {
-            const copy = [...prev];
-            copy.splice(idx, 1, newMsg);
-            return copy;
-          }
-          return [...prev, newMsg];
-        });
-
-        hardResetPendingState();
+        return [...prev, newMsg];
       });
-    } catch (e) {
-      console.error("Socket listen error:", e);
-      console.log("Error message:", e?.message || e);
-    }
 
-    return () => {
-      console.log("Removing listener for task:", taskId);
-      socket.off(taskId);
+      // เคลียร์สถานะรอ และยืนยัน cache ว่าไม่ pending แล้ว
+      hardResetPendingState();
+      const chatId2 = selectedChatIdRef.current;
+      if (chatId2) {
+        storage.setItem(
+          STORAGE_PREFIX + String(chatId2),
+          JSON.stringify({ sending: false, savedAt: Date.now() })
+        );
+      }
     };
-  }, [currentTaskIdRef.current]);
 
-  /** ---------- Load chats ---------- */
+    const unsubscribe = subscribeTask(taskId, handler);
+    return () => {
+      unsubscribe?.();
+    };
+  }, [subscribeTask, currentTaskId]);
+
+  /* =============================================================================
+   * CHAT LIST / HISTORY LOADERS
+   * ========================================================================== */
+  /** โหลดรายชื่อแชตของผู้ใช้ และเลือกแชตล่าสุด */
   const loadUserChats = async () => {
     if (!user?.id && !user?._id) return;
     setLoadingChats(true);
 
-    
     const lastSelectedId = await storage.getItem(LAST_CHAT_ID_KEY);
 
     try {
       const list = await getUserChats(user.id || user._id);
-
-      
       const mapped = (list || []).map((c) => ({
         id: String(c.chatId ?? c.id),
         title: c.chatHeader || "แชต",
@@ -406,7 +441,7 @@ export default function ChatScreen({ navigation }) {
       setChats(mapped);
 
       if (mapped.length === 0) {
-       
+        // ไม่มีห้อง -> สร้างใหม่ให้เลย
         const created = await createChat({
           userId: user.id || user._id,
           chatHeader: "แชตใหม่",
@@ -418,16 +453,13 @@ export default function ChatScreen({ navigation }) {
         setChats(newChats);
         setSelectedChatId(newChatId);
       } else {
-       
+        // พยายามเลือกห้องเดิมล่าสุด (ถ้ามี)
         const lastIdIsValid =
           !!lastSelectedId &&
           mapped.some((c) => String(c.id) === String(lastSelectedId));
-
-        if (lastIdIsValid) {
-          setSelectedChatId(String(lastSelectedId));
-        } else {
-          setSelectedChatId(String(mapped[0].id));
-        }
+        setSelectedChatId(
+          lastIdIsValid ? String(lastSelectedId) : String(mapped[0].id)
+        );
       }
     } catch (err) {
       console.error("loadUserChats error:", err);
@@ -437,13 +469,13 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** ---------- Load history ---------- */
+  /** โหลดประวัติแชต + แก้เคส pending ค้างด้วยการเช็คตามเวลา */
   const loadHistory = async (chatId) => {
     if (!chatId) return;
     setLoadingHistory(true);
-
     persistSuspendedRef.current = true;
 
+    // รีเซ็ตสถานะ pending ทุกอย่างก่อน
     setSending(false);
     setShowStop(false);
     setCurrentTaskId(null);
@@ -453,34 +485,76 @@ export default function ChatScreen({ navigation }) {
 
     try {
       const rows = await getChatQna(chatId);
-      const historyMsgs = (rows || []).map((r, idx) => ({
-        id: String(r.qNaId || idx),
-        from: r.qNaType === "Q" ? "user" : "bot",
-        text: r.qNaWords,
-        time: formatTS(r.createdAt || r.createAt || Date.now()),
-      }));
+
+      // เรียงแน่ๆ ตามเวลา (เก่า -> ใหม่)
+      const sorted = (rows || []).slice().sort((a, b) => {
+        const ta = toTS(a?.createdAt || a?.createAt);
+        const tb = toTS(b?.createdAt || b?.createAt);
+        return ta - tb;
+      });
+
+      // map เป็น messages พร้อม tsNum (ไว้เช็คเวลา)
+      const historyMsgs = sorted.map((r, idx) => {
+        const tsNum = toTS(r?.createdAt || r?.createAt || Date.now());
+        return {
+          id: String(r.qNaId || idx),
+          from: r.qNaType === "Q" ? "user" : "bot",
+          text: r.qNaWords,
+          time: formatTS(tsNum),
+          tsNum,
+        };
+      });
 
       let nextMsgs = [...historyMsgs];
 
+      // กู้สถานะจาก cache เพื่อชี้ว่า "ตอนออกจากหน้าไปยังรออยู่ไหม"
       const raw = await storage.getItem(STORAGE_PREFIX + chatId);
       if (raw) {
         const saved = JSON.parse(raw);
 
         if (saved?.sending) {
-          const pendId = saved.currentTaskId
-            ? pendingBubbleId(saved.currentTaskId)
-            : "pending-generic";
-          const existPend = nextMsgs.some((m) => m.id === pendId);
-          if (!existPend) nextMsgs.push(makePendingBubble(saved.currentTaskId));
+          // เวลาข้อความ user ล่าสุดที่ค้าง (ถ้ามี)
+          const pendingUserTs =
+            toTS(saved?.pendingUserMsg?.time) ||
+            toTS(saved?.pendingUserMsgTs) ||
+            toTS(saved?.savedAt);
 
-          setSending(true);
-          setCurrentTaskId(saved.currentTaskId ?? null);
-          setPendingQnaId(saved.pendingQnaId ?? null);
-          setPendingUserMsgId(saved.pendingUserMsgId ?? null);
+          // มีบอทตอบหลังเวลานี้ไหม?
+          const hasBotAfterPending = historyMsgs.some(
+            (m) => m.from === "bot" && m.tsNum >= pendingUserTs
+          );
 
-          setShowStop(false);
-          if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
-          stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
+          if (hasBotAfterPending) {
+            // มีคำตอบแล้ว -> เคลียร์ pending ใน cache
+            await storage.setItem(
+              STORAGE_PREFIX + String(chatId),
+              JSON.stringify({ sending: false, savedAt: Date.now() })
+            );
+          } else {
+            // ยังรอจริง -> โชว์ pending bubble + ตั้งธงส่ง
+            const pendId = saved.currentTaskId
+              ? `pending-${saved.currentTaskId}`
+              : "pending-generic";
+            const existPend = nextMsgs.some((m) => m.id === pendId);
+            if (!existPend)
+              nextMsgs.push({
+                id: pendId,
+                from: "bot",
+                pending: true,
+                text: "กำลังค้นหาคำตอบ...",
+                time: formatTS(Date.now()),
+                tsNum: Date.now(),
+              });
+
+            setSending(true);
+            setCurrentTaskId(saved.currentTaskId ?? null);
+            setPendingQnaId(saved.pendingQnaId ?? null);
+            setPendingUserMsgId(saved.pendingUserMsgId ?? null);
+
+            setShowStop(false);
+            if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+            stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
+          }
         }
       }
 
@@ -495,14 +569,17 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** ---------- Lifecycle ---------- */
+  /* =============================================================================
+   * LIFECYCLE & PERSISTENCE
+   * ========================================================================== */
+  /** จดจำห้องที่เลือกล่าสุด */
   useEffect(() => {
     if (selectedChatId) {
-     
       storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
     }
   }, [selectedChatId]);
 
+  /** เมื่อผู้ใช้ล็อกอิน/เปลี่ยนผู้ใช้ -> โหลดรายชื่อห้อง */
   useEffect(() => {
     if (!user) {
       setChats([]);
@@ -512,11 +589,13 @@ export default function ChatScreen({ navigation }) {
     loadUserChats();
   }, [user]);
 
+  /** เมื่อเปลี่ยนห้อง -> โหลดประวัติห้องนั้น */
   useEffect(() => {
     if (!selectedChatId) return;
     loadHistory(selectedChatId);
   }, [selectedChatId]);
 
+  /** เซฟสถานะ (เช่น กำลังรอ/ข้อความค้าง) ลง cache ของห้อง */
   useEffect(() => {
     (async () => {
       if (!selectedChatId) return;
@@ -530,6 +609,8 @@ export default function ChatScreen({ navigation }) {
         pendingUserMsg:
           pendingUserMsgId &&
           messages.find((m) => m.id === pendingUserMsgId && m.from === "user"),
+        // สำหรับดีด pending ออกเมื่อกลับหน้ามา
+        pendingUserMsgTs: Date.now(),
         savedAt: Date.now(),
       };
 
@@ -547,15 +628,50 @@ export default function ChatScreen({ navigation }) {
     messages,
   ]);
 
-  /** ---------- Web beforeunload ---------- */
+  /** เมื่อหน้าโฟกัสกลับมา -> เคลียร์สถานะค้างที่เกิน TTL (กันค้างถาวร) */
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const chatId = selectedChatIdRef.current;
+        if (!chatId) return;
+
+        const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
+        if (!raw) return;
+
+        const saved = JSON.parse(raw);
+        if (saved?.sending) {
+          const TTL_MS = 30 * 1000; // 30 วินาที
+          if (!saved.savedAt || Date.now() - saved.savedAt > TTL_MS) {
+            await storage.setItem(
+              STORAGE_PREFIX + String(chatId),
+              JSON.stringify({ sending: false, savedAt: Date.now() })
+            );
+            setSending(false);
+            setShowStop(false);
+            setCurrentTaskId(null);
+            setPendingQnaId(null);
+            setPendingUserMsgId(null);
+            removePendingBotBubble(null);
+          }
+        }
+      })();
+    }, [])
+  );
+
+  /** กัน unload (เว็บ) – เผื่ออยากเพิ่ม logic ในอนาคต */
   useEffect(() => {
     if (Platform.OS !== "web") return;
-    const onBeforeUnload = () => {};
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    const handleBeforeUnload = () => {};
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
   }, []);
 
-  /** ---------- Chat actions ---------- */
+  /* =============================================================================
+   * ACTIONS: AUTH / CHAT CRUD
+   * ========================================================================== */
+  /** กล่องยืนยันลบแชต (RN + Web) */
   const confirmDelete = () => {
     if (Platform.OS === "web") {
       return Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?"));
@@ -573,6 +689,7 @@ export default function ChatScreen({ navigation }) {
     });
   };
 
+  /** ออกจากระบบ + รีเซ็ต state + นำทาง */
   const handleLogout = async () => {
     try {
       await logout();
@@ -589,10 +706,10 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
+  /** ลบแชตที่เลือก (พร้อมอัปเดต state) */
   const deleteChat = async (id) => {
     const ok = await confirmDelete();
     if (!ok) return;
-
     try {
       await apiDeleteChat(id);
       setChats((prev) => prev.filter((c) => String(c.id) !== String(id)));
@@ -611,6 +728,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
+  /** เริ่มแก้ชื่อห้อง (inline) */
   const startRenameInline = (id) => {
     const current = chats.find((c) => String(c.id) === String(id));
     setEditingId(String(id));
@@ -618,11 +736,13 @@ export default function ChatScreen({ navigation }) {
     closeItemMenu();
   };
 
+  /** ยกเลิกแก้ชื่อห้อง (inline) */
   const cancelRenameInline = () => {
     setEditingId(null);
     setEditingText("");
   };
 
+  /** ยืนยันแก้ชื่อห้อง (inline) */
   const confirmRenameInline = async () => {
     const id = editingId;
     const title = (editingText || "").trim();
@@ -644,6 +764,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
+  /** เพิ่มแชตใหม่และเลือกแชตนั้นทันที */
   const addNewChat = async () => {
     if (!user) {
       Alert.alert(
@@ -671,7 +792,10 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** ---------- Send / cancel ---------- */
+  /* =============================================================================
+   * SEND / CANCEL MESSAGE
+   * ========================================================================== */
+  /** ส่งคำถาม -> แสดงข้อความผู้ใช้ + เพิ่ม pending bubble + ยิง API */
   const sendMessage = async () => {
     const text = inputText.trim();
     if (!text) {
@@ -679,11 +803,13 @@ export default function ChatScreen({ navigation }) {
       return;
     }
 
+    // 1) แสดงข้อความผู้ใช้
+    const now = Date.now();
     const userMessage = {
-      id: Date.now().toString(),
+      id: now.toString(),
       from: "user",
       text,
-      time: formatTS(Date.now()),
+      time: formatTS(now),
     };
     setPendingUserMsgId(userMessage.id);
     setMessages((prev) => [...prev, userMessage]);
@@ -693,13 +819,16 @@ export default function ChatScreen({ navigation }) {
       listRef.current?.scrollToEnd({ animated: true })
     );
 
+    // 2) ตั้งสถานะกำลังรอ + ตั้ง timer แสดงปุ่มหยุด
     setSending(true);
     setShowStop(false);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
 
+    // 3) แสดง pending bubble (ยังไม่รู้ taskId)
     addPendingBotBubble(null);
 
+    // 4) บันทึก cache (เผื่อผู้ใช้สลับหน้า)
     if (selectedChatId) {
       storage.setItem(
         STORAGE_PREFIX + String(selectedChatId),
@@ -709,18 +838,25 @@ export default function ChatScreen({ navigation }) {
           pendingQnaId: null,
           pendingUserMsgId: userMessage.id,
           pendingUserMsg: userMessage,
-          savedAt: Date.now(),
+          pendingUserMsgTs: now,
+          savedAt: now,
         })
       );
     }
 
+    // 5) ยิง API
     try {
       const resp = await askQuestion({
         chatId: user ? selectedChatId : undefined,
         question: text,
       });
 
-      let taskId = resp?.taskId ?? resp?.id ?? resp?.data?.taskId ?? resp?.data?.id ?? null;
+      const taskId =
+        resp?.taskId ??
+        resp?.id ??
+        resp?.data?.taskId ??
+        resp?.data?.id ??
+        null;
       setCurrentTaskId(taskId);
 
       const qId =
@@ -734,6 +870,7 @@ export default function ChatScreen({ navigation }) {
 
       if (taskId) upgradePendingBubble(taskId);
 
+      // อัปเดต cache พร้อม taskId
       if (selectedChatId) {
         storage.setItem(
           STORAGE_PREFIX + String(selectedChatId),
@@ -743,6 +880,7 @@ export default function ChatScreen({ navigation }) {
             pendingQnaId: qId,
             pendingUserMsgId: userMessage.id,
             pendingUserMsg: userMessage,
+            pendingUserMsgTs: now,
             savedAt: Date.now(),
           })
         );
@@ -760,6 +898,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
+  /** ยกเลิกการส่ง/การรอ (ยิง cancel ไป backend + ล้าง pending bubble) */
   const cancelSending = async () => {
     try {
       if (currentTaskId) {
@@ -787,6 +926,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
+  /** รีเซ็ตสถานะการรอ + ปุ่มหยุด + ค่า task/qna + เซฟ cache ว่าไม่ pending */
   const hardResetPendingState = () => {
     setSending(false);
     setShowStop(false);
@@ -804,7 +944,10 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** ---------- Render message ---------- */
+  /* =============================================================================
+   * RENDERERS
+   * ========================================================================== */
+  /** renderer ของ item แต่ละข้อความในลิสต์ */
   const renderItem = ({ item }) => {
     const isPending = item.pending === true;
     return (
@@ -860,11 +1003,16 @@ export default function ChatScreen({ navigation }) {
     );
   };
 
-  /** ---------- Bottom pad ---------- */
+  /* =============================================================================
+   * DERIVED VALUES
+   * ========================================================================== */
+  /** ระยะ padding ด้านล่างของลิสต์ (กันทับ input) */
   const listBottomPad =
     10 + inputHeight + 12 + (insets.bottom || 0) + kbBtmNum + EXTRA_BOTTOM_GAP;
 
-  /** ---------- UI ---------- */
+  /* =============================================================================
+   * UI
+   * ========================================================================== */
   return (
     <SafeAreaView
       style={[
@@ -1024,11 +1172,11 @@ export default function ChatScreen({ navigation }) {
         </View>
       </View>
 
-      {/* Body + Background image (centered, no layout impact) */}
+      {/* Body */}
       <Animated.View style={{ flex: 1 }}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <View style={styles.background}>
-            {/* ชั้นพื้นหลัง absolute ที่จัดกึ่งกลางรูปเท่านั้น */}
+            {/* background image (ลายน้ำ) */}
             <View style={styles.bgCenterWrap} pointerEvents="none">
               <Image
                 source={buddhadhamBG}
@@ -1037,6 +1185,7 @@ export default function ChatScreen({ navigation }) {
               />
             </View>
 
+            {/* ประวัติข้อความ */}
             {user && loadingHistory ? (
               <View
                 style={{
@@ -1107,9 +1256,7 @@ export default function ChatScreen({ navigation }) {
                     boxSizing: "border-box",
                     opacity: sending ? 0.6 : 1,
                   }}
-                  onInput={() => {
-                    adjustWebHeight();
-                  }}
+                  onInput={adjustWebHeight}
                 />
               ) : (
                 <TextInput
@@ -1209,7 +1356,7 @@ export default function ChatScreen({ navigation }) {
           onPress={closeItemMenu}
         />
         <View style={[styles.popupMenu, getPopupStyle()]}>
-          <View className="popupArrow" style={styles.popupArrow} />
+          <View style={styles.popupArrow} />
           <TouchableOpacity
             style={styles.popupItem}
             onPress={() => {
@@ -1241,9 +1388,9 @@ export default function ChatScreen({ navigation }) {
   );
 }
 
-/** ==============================
- *  Styles
- *  ============================== */
+/* =============================================================================
+ * STYLES
+ * ========================================================================== */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#2f3640" },
 

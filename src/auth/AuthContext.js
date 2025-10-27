@@ -4,7 +4,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null); // { id, name, email, token? }
+  const [user, setUser] = useState(null);
+  const [isRestoring, setIsRestoring] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -13,6 +14,8 @@ export function AuthProvider({ children }) {
         if (raw) setUser(JSON.parse(raw));
       } catch (e) {
         console.warn("Load auth from storage failed:", e);
+      } finally {
+        setIsRestoring(false);
       }
     })();
   }, []);
@@ -27,7 +30,7 @@ export function AuthProvider({ children }) {
     await AsyncStorage.removeItem("auth:user");
   };
 
-  const value = useMemo(() => ({ user, login, logout }), [user]);
+  const value = useMemo(() => ({ user, isRestoring, login, logout }), [user, isRestoring]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
