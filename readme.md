@@ -1,6 +1,7 @@
 env
 ```
 EXPO_PUBLIC_API_URL = http://127.0.0.1:3000
+EXPO_PUBLIC_SOCKET_URL = http://127.0.0.1:3000
 ```
 
 #to do list
