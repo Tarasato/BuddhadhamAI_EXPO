@@ -1,8 +1,7 @@
+version: "3.9"
 services:
-  buddham_ai_expo:
+  expo-web:
     build: .
-    image: buddham_ai_expo:latest
-    env_file:
-      - .env
     ports:
       - "80:80"
+      - "443:443"

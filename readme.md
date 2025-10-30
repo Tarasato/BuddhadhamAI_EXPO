@@ -6,10 +6,6 @@ EXPO_PUBLIC_SOCKET_URL = http://127.0.0.1:3000
 
 #to do list
 
-npx expo export --platform web
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout key.pem -out cert.pem -subj "//CN=localhost"
 
-docker build -t buddham_ai_expo .
-
-docker-compose up
-
-npx expo export --platform web && docker build -t buddham_ai_expo . && docker-compose up -d
+docker-compose up --build -d
