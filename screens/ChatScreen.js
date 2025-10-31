@@ -464,7 +464,7 @@ export default function ChatScreen({ navigation }) {
                 id: pendId,
                 from: "bot",
                 pending: true,
-                text: "กำลังค้นหาคำตอบ...",
+                text: "กำลังประมวลผล...",
                 time: formatTS(Date.now()),
                 tsNum: Date.now(),
               });
