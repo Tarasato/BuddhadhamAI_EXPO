@@ -1,4 +1,5 @@
-import React, { useRef, useState, useEffect, useCallback } from "react";
+// screens/ChatScreen.js
+import React, { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -18,11 +19,13 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
+  PermissionsAndroid,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import Markdown from "react-native-markdown-display";
 import Icon from "react-native-vector-icons/Ionicons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Voice from "@react-native-voice/voice";
 
 import { useAuth } from "../src/auth/AuthContext";
 import { useWS } from "../src/ws/WSContext";
@@ -41,24 +44,21 @@ import {
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/* =============================================================================
- * UI CONFIG
- * ========================================================================== */
+/* ============================== Config ============================== */
 const MIN_H = 40;
 const MAX_H = 140;
 const LINE_H = 20;
 const PAD_V_TOP = 10;
 const PAD_V_BOTTOM = 10;
 const EXTRA_BOTTOM_GAP = 24;
+const AVATAR_SIZE = 44;
 
 const STORAGE_PREFIX = "chat_state_v1:";
 const LAST_CHAT_ID_KEY = "last_selected_chat_id";
+const THEME_KEY = "ui_theme_dark";
 
-/* =============================================================================
- * STORAGE HELPER (RN + Web fallback)
- * ========================================================================== */
+/* ============================== Helpers ============================== */
 const storage = {
-  /** อ่านค่า string จาก AsyncStorage หรือ localStorage */
   async getItem(key) {
     try {
       if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key);
@@ -70,13 +70,9 @@ const storage = {
     }
     return null;
   },
-  /** เซฟค่า string ไป AsyncStorage หรือ localStorage */
   async setItem(key, val) {
     try {
-      if (AsyncStorage?.setItem) {
-        await AsyncStorage.setItem(key, val);
-        return;
-      }
+      if (AsyncStorage?.setItem) return await AsyncStorage.setItem(key, val);
     } catch {}
     if (Platform.OS === "web") {
       try {
@@ -84,29 +80,10 @@ const storage = {
       } catch {}
     }
   },
-  /** ลบค่าใน AsyncStorage หรือ localStorage */
-  async removeItem(key) {
-    try {
-      if (AsyncStorage?.removeItem) {
-        await AsyncStorage.removeItem(key);
-        return;
-      }
-    } catch {}
-    if (Platform.OS === "web") {
-      try {
-        window.localStorage.removeItem(key);
-      } catch {}
-    }
-  },
 };
 
-/* =============================================================================
- * UTILS
- * ========================================================================== */
-/** บีบ/ขยายความสูงกล่อง input ให้อยู่ในช่วง MIN_H..MAX_H */
 const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
 
-/** ฟอร์แมต timestamp เป็น string ภาษาไทย */
 const formatTS = (d) =>
   new Date(d).toLocaleString("th-TH", {
     year: "numeric",
@@ -118,79 +95,143 @@ const formatTS = (d) =>
     hour12: false,
   });
 
-/** แปลงค่าเวลาที่รับมา (string/number) ให้เป็น millis (number) ปลอดภัย */
 const toTS = (v) => {
   if (!v) return 0;
   const n = typeof v === "number" ? v : Date.parse(v);
   return Number.isFinite(n) ? n : 0;
 };
 
-/* =============================================================================
- * MAIN COMPONENT
- * ========================================================================== */
+/* ============================== Component ============================== */
 export default function ChatScreen({ navigation }) {
-  /* ----- Contexts ----- */
-  const { on, subscribeTask } = useWS(); // ฟัง event แบบ global และตาม taskId
-  const { user, logout } = useAuth(); // ข้อมูลผู้ใช้/ฟังก์ชันออกจากระบบ
+  const { on, subscribeTask } = useWS();
+  const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
 
-  /* ----- State: Pending/Task ----- */
-  const [sending, setSending] = useState(false); // กำลังรอคำตอบอยู่หรือไม่
-  const awaitingRef = useRef(false); // ref mirror ของ sending (ใช้ใน callback)
+  /* Theme */
+  const [isDark, setIsDark] = useState(true);
+  useEffect(() => {
+    (async () => {
+      const saved = await storage.getItem(THEME_KEY);
+      if (saved === "true") setIsDark(true);
+      if (saved === "false") setIsDark(false);
+    })();
+  }, []);
+  const toggleTheme = async () => {
+    const next = !isDark;
+    setIsDark(next);
+    await storage.setItem(THEME_KEY, next ? "true" : "false");
+  };
+
+  const C = useMemo(
+    () =>
+      isDark
+        ? {
+            containerBg: "#2f3640",
+            headerBg: "#1e272e",
+            headerText: "#ffffff",
+            chipBg: "#2f3640",
+            chipText: "#ffffff",
+            sidebarBg: "#dcdde1",
+            sidebarText: "#222",
+            divider: "#444",
+            bubbleUserBg: "#ffffff",
+            bubbleUserText: "#333333",
+            bubbleBotBg: "#3a3a3a",
+            bubbleBotText: "#ffffff",
+            timeText: "#bbbbbb",
+            inputBg: "#ffffff",
+            inputBarBg: "#1e272e",
+            border: "#444444",
+            sendBtn: "#0097e6",
+            cancelBtn: "#e74c3c",
+            overlay: "rgba(0,0,0,0.3)",
+            avatarUserBg: "#4b7bec",
+            avatarBotBg: "#20bf6b",
+            logoTint: "#ffffff",
+          }
+        : {
+            containerBg: "#f6f7fb",
+            headerBg: "#ffffff",
+            headerText: "#111111",
+            chipBg: "#eef1f6",
+            chipText: "#111111",
+            sidebarBg: "#f0f2f5",
+            sidebarText: "#222",
+            divider: "#e1e5ea",
+            bubbleUserBg: "#ffffff",
+            bubbleUserText: "#222222",
+            bubbleBotBg: "#eaeef5",
+            bubbleBotText: "#111111",
+            timeText: "#7a7a7a",
+            inputBg: "#ffffff",
+            inputBarBg: "#ffffff",
+            border: "#d9dee5",
+            sendBtn: "#2563eb",
+            cancelBtn: "#ef4444",
+            overlay: "rgba(0,0,0,0.18)",
+            avatarUserBg: "#3b82f6",
+            avatarBotBg: "#16a34a",
+            logoTint: "#000000",
+          },
+    [isDark]
+  );
+
+  /* Pending/Task */
+  const [sending, setSending] = useState(false);
+  const awaitingRef = useRef(false);
   useEffect(() => {
     awaitingRef.current = sending;
   }, [sending]);
 
-  const [showStop, setShowStop] = useState(false); // แสดงปุ่มหยุดเมื่อรอเกิน 450ms
-  const stopTimerRef = useRef(null); // timer ของปุ่มหยุด
+  const [showStop, setShowStop] = useState(false);
+  const stopTimerRef = useRef(null);
 
-  const [currentTaskId, setCurrentTaskId] = useState(null); // task ปัจจุบัน
-  const currentTaskIdRef = useRef(null); // ref mirror ของ task ปัจจุบัน
+  const [currentTaskId, setCurrentTaskId] = useState(null);
+  const currentTaskIdRef = useRef(null);
   useEffect(() => {
     currentTaskIdRef.current = currentTaskId;
   }, [currentTaskId]);
 
-  const [pendingQnaId, setPendingQnaId] = useState(null); // id Q&A ค้าง
-  const [pendingUserMsgId, setPendingUserMsgId] = useState(null); // id ข้อความ user ค้าง
+  const [pendingQnaId, setPendingQnaId] = useState(null);
+  const [pendingUserMsgId, setPendingUserMsgId] = useState(null);
 
-  /* ----- State: Chat UI ----- */
-  const [messages, setMessages] = useState([]); // array ของข้อความ (user/bot/pending)
-  const [inputText, setInputText] = useState(""); // ข้อความในช่องพิมพ์
-  const [sidebarOpen, setSidebarOpen] = useState(false); // เปิด/ปิด sidebar
-  const sidebarAnim = useState(new Animated.Value(-250))[0]; // animation slide sidebar
+  /* Chat UI */
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarAnim = useState(new Animated.Value(-250))[0];
 
-  /* ----- State: Input Height (autosize) ----- */
+  /* Input height */
   const [inputHeight, setInputHeight] = useState(MIN_H);
 
-  /* ----- State: Keyboard shift ----- */
+  /* Keyboard shift */
   const kbBottom = useRef(new Animated.Value(0)).current;
   const [kbBtmNum, setKbBtmNum] = useState(0);
 
-  /* ----- List reference (auto scroll) ----- */
+  /* List ref */
   const listRef = useRef(null);
 
-  /* ----- Chats list / selection ----- */
-  const [chats, setChats] = useState([]); // รายชื่อห้องแชต
-  const [selectedChatId, setSelectedChatId] = useState(null); // id แชตที่เลือก
+  /* Chats */
+  const [chats, setChats] = useState([]);
+  const [selectedChatId, setSelectedChatId] = useState(null);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const selectedChatIdRef = useRef(null); // mirror ของ selectedChatId
+  const selectedChatIdRef = useRef(null);
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
 
-  /* ----- Popup menu: 3-dots / rename ----- */
-  const [menuFor, setMenuFor] = useState(null); // chatId ที่เรียกเมนู
-  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 }); // ตำแหน่ง popup
-  const [editingId, setEditingId] = useState(null); // chatId ที่กำลัง rename
-  const [editingText, setEditingText] = useState(""); // ข้อความชื่อใหม่
+  /* Popup menu */
+  const [menuFor, setMenuFor] = useState(null);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const [editingId, setEditingId] = useState(null);
+  const [editingText, setEditingText] = useState("");
 
-  /* ----- Persist guard (กันเขียนซ้ำระหว่างโหลด) ----- */
+  /* Persist guard */
   const persistSuspendedRef = useRef(false);
 
-  /* ----- Web input autosize (เฉพาะเว็บ) ----- */
+  /* Web autosize */
   const webRef = useRef(null);
-  /** ปรับความสูง textarea (เว็บ) ตามเนื้อหา */
   const adjustWebHeight = () => {
     if (Platform.OS !== "web") return;
     const el = webRef.current;
@@ -205,14 +246,11 @@ export default function ChatScreen({ navigation }) {
     if (Platform.OS === "web") adjustWebHeight();
   }, []);
 
-  /* ----- Keyboard shift (เลื่อนอินพุตตามคีย์บอร์ด) ----- */
+  /* Keyboard shift */
   useEffect(() => {
-    const showEvt =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvt =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-    /** เมื่อคีย์บอร์ดขึ้น: ขยับ bottom ของอินพุตขึ้นตามความสูงคีย์บอร์ด */
     const onShow = (e) => {
       const kh = e?.endCoordinates?.height ?? 0;
       const bottom = Math.max(0, kh - (insets.bottom || 0));
@@ -223,8 +261,6 @@ export default function ChatScreen({ navigation }) {
         useNativeDriver: false,
       }).start();
     };
-
-    /** เมื่อคีย์บอร์ดลง: รีเซ็ต bottom ของอินพุต */
     const onHide = (e) => {
       setKbBtmNum(0);
       Animated.timing(kbBottom, {
@@ -242,40 +278,26 @@ export default function ChatScreen({ navigation }) {
     };
   }, [insets.bottom, kbBottom]);
 
-  /* ----- Auto scroll เมื่อลิสต์เพิ่มรายการใหม่ ----- */
+  /* Auto scroll */
   useEffect(() => {
-    requestAnimationFrame(() =>
-      listRef.current?.scrollToEnd({ animated: true })
-    );
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
   }, [messages.length]);
 
-  /* =============================================================================
-   * POPUP MENU HELPERS
-   * ========================================================================== */
-  /** เปิด popup เมนูของห้องแชตที่ id และจดตำแหน่งคลิก */
+  /* Popup helpers */
   const openItemMenu = (id, x, y) => {
     setMenuFor(id);
     setMenuPos({ x, y });
   };
-  /** ปิด popup เมนู */
   const closeItemMenu = () => setMenuFor(null);
-  /** คำนวณสไตล์ popup ให้ไม่ล้นขอบหน้าจอ */
   const getPopupStyle = () => {
     const { width, height } = Dimensions.get("window");
     const MW = 200,
       MH = 160,
       PAD = 10;
-    return {
-      left: Math.min(menuPos.x, width - MW - PAD),
-      top: Math.min(menuPos.y, height - MH - PAD),
-      width: MW,
-    };
+    return { left: Math.min(menuPos.x, width - MW - PAD), top: Math.min(menuPos.y, height - MH - PAD), width: MW };
   };
 
-  /* =============================================================================
-   * SIDEBAR
-   * ========================================================================== */
-  /** เปิด/ปิด sidebar ด้วยแอนิเมชัน */
+  /* Sidebar */
   const toggleSidebar = () => {
     const toOpen = !sidebarOpen;
     Animated.timing(sidebarAnim, {
@@ -285,12 +307,8 @@ export default function ChatScreen({ navigation }) {
     }).start(() => setSidebarOpen(toOpen));
   };
 
-  /* =============================================================================
-   * PENDING BUBBLE HELPERS
-   * ========================================================================== */
-  /** แปลง taskId -> id ของ bubble pending */
+  /* Pending Bubbles */
   const pendingBubbleId = (taskId) => `pending-${taskId}`;
-  /** สร้าง bubble pending (ข้อความ “กำลังค้นหาคำตอบ...”) */
   const makePendingBubble = (taskId) => ({
     id: taskId ? pendingBubbleId(taskId) : "pending-generic",
     from: "bot",
@@ -298,21 +316,13 @@ export default function ChatScreen({ navigation }) {
     text: "กำลังค้นหาคำตอบ...",
     time: formatTS(Date.now()),
   });
-  /** เพิ่ม bubble pending (กันซ้ำ) */
   const addPendingBotBubble = (taskId) => {
     const id = taskId ? pendingBubbleId(taskId) : "pending-generic";
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === id)) return prev;
-      return [...prev, makePendingBubble(taskId)];
-    });
+    setMessages((prev) => (prev.some((m) => m.id === id) ? prev : [...prev, makePendingBubble(taskId)]));
   };
-  /** ลบ bubble pending (จาก taskId เฉพาะ หรืออันแรกที่เจอ) */
   const removePendingBotBubble = (taskId) => {
     setMessages((prev) => {
-      if (taskId) {
-        const id = pendingBubbleId(taskId);
-        return prev.filter((m) => m.id !== id);
-      }
+      if (taskId) return prev.filter((m) => m.id !== pendingBubbleId(taskId));
       const idx = prev.findIndex((m) => m.pending === true);
       if (idx < 0) return prev;
       const copy = [...prev];
@@ -320,83 +330,53 @@ export default function ChatScreen({ navigation }) {
       return copy;
     });
   };
-  /** อัปเกรด bubble pending-generic ให้กลายเป็นของ taskId ที่เพิ่งรู้ */
   const upgradePendingBubble = (taskId) => {
     if (!taskId) return;
     setMessages((prev) => {
-      const genIdx = prev.findIndex(
-        (m) => m.pending === true && m.id === "pending-generic"
-      );
+      const genIdx = prev.findIndex((m) => m.pending === true && m.id === "pending-generic");
       if (genIdx === -1) return prev;
-      const upgraded = { ...prev[genIdx], id: `pending-${taskId}` };
       const copy = [...prev];
-      copy.splice(genIdx, 1, upgraded);
+      copy.splice(genIdx, 1, { ...prev[genIdx], id: `pending-${taskId}` });
       return copy;
     });
   };
 
-  /* =============================================================================
-   * WS EVENT HANDLERS
-   * ========================================================================== */
-  /** ฟังสัญญาณ global 'done' จากเซิร์ฟเวอร์ เพื่อเคลียร์ pending */
+  /* WS handlers */
   useEffect(() => {
     const doneHandler = (payload) => {
-      const matchesTask =
-        !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
-      const matchesChat =
-        !!payload?.chatId &&
-        String(payload.chatId) === String(selectedChatIdRef.current);
+      const matchesTask = !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
+      const matchesChat = !!payload?.chatId && String(payload.chatId) === String(selectedChatIdRef.current);
       if (!matchesTask && !matchesChat) return;
       hardResetPendingState();
     };
-
     const unbind = on("done", doneHandler);
-    return () => {
-      unbind?.();
-    };
+    return () => unbind?.();
   }, [on]);
 
-  /** ฟังสัญญาณตาม taskId (ข้อความผลลัพธ์บอท) */
   useEffect(() => {
     const taskId = currentTaskIdRef.current;
     if (!taskId) return;
-
     const handler = (msgObj) => {
-      // ---- คัดกรองว่าเป็น event ของเราจริงไหม ----
-      const matchesTask =
-        !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
-      const matchesChat =
-        !!msgObj?.chatId &&
-        String(msgObj.chatId) === String(selectedChatIdRef.current);
+      const matchesTask = !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
+      const matchesChat = !!msgObj?.chatId && String(msgObj.chatId) === String(selectedChatIdRef.current);
       let accept = matchesTask || matchesChat;
       if (!accept && awaitingRef.current) accept = true;
       if (!accept) return;
 
-      // ---- แปลง payload เป็นข้อความสุดท้ายที่จะเรนเดอร์ ----
-      const finalText =
-        typeof msgObj === "string"
-          ? msgObj
-          : msgObj?.text ?? JSON.stringify(msgObj);
+      const finalText = typeof msgObj === "string" ? msgObj : msgObj?.text ?? JSON.stringify(msgObj);
 
-      // ถ้า taskId เปลี่ยนกลางทาง -> อัปเดตและอัปเกรดบับเบิล
       if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
         setCurrentTaskId(msgObj.taskId);
         upgradePendingBubble(msgObj.taskId);
       }
 
-      // แทนที่ bubble pending ด้วยข้อความจริง
       const tId = msgObj?.taskId || currentTaskIdRef.current;
       setMessages((prev) => {
         const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
         let idx = prev.findIndex((m) => m.id === pendId);
         if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
 
-        const newMsg = {
-          id: Date.now().toString(),
-          from: "bot",
-          text: finalText,
-          time: formatTS(Date.now()),
-        };
+        const newMsg = { id: Date.now().toString(), from: "bot", text: finalText, time: formatTS(Date.now()) };
         if (idx >= 0) {
           const copy = [...prev];
           copy.splice(idx, 1, newMsg);
@@ -405,61 +385,35 @@ export default function ChatScreen({ navigation }) {
         return [...prev, newMsg];
       });
 
-      // เคลียร์สถานะรอ และยืนยัน cache ว่าไม่ pending แล้ว
       hardResetPendingState();
       const chatId2 = selectedChatIdRef.current;
       if (chatId2) {
-        storage.setItem(
-          STORAGE_PREFIX + String(chatId2),
-          JSON.stringify({ sending: false, savedAt: Date.now() })
-        );
+        storage.setItem(STORAGE_PREFIX + String(chatId2), JSON.stringify({ sending: false, savedAt: Date.now() }));
       }
     };
-
     const unsubscribe = subscribeTask(taskId, handler);
-    return () => {
-      unsubscribe?.();
-    };
+    return () => unsubscribe?.();
   }, [subscribeTask, currentTaskId]);
 
-  /* =============================================================================
-   * CHAT LIST / HISTORY LOADERS
-   * ========================================================================== */
-  /** โหลดรายชื่อแชตของผู้ใช้ และเลือกแชตล่าสุด */
+  /* Load chats/history */
   const loadUserChats = async () => {
     if (!user?.id && !user?._id) return;
     setLoadingChats(true);
-
     const lastSelectedId = await storage.getItem(LAST_CHAT_ID_KEY);
 
     try {
       const list = await getUserChats(user.id || user._id);
-      const mapped = (list || []).map((c) => ({
-        id: String(c.chatId ?? c.id),
-        title: c.chatHeader || "แชต",
-      }));
+      const mapped = (list || []).map((c) => ({ id: String(c.chatId ?? c.id), title: c.chatHeader || "แชต" }));
       setChats(mapped);
 
       if (mapped.length === 0) {
-        // ไม่มีห้อง -> สร้างใหม่ให้เลย
-        const created = await createChat({
-          userId: user.id || user._id,
-          chatHeader: "แชตใหม่",
-        });
+        const created = await createChat({ userId: user.id || user._id, chatHeader: "แชตใหม่" });
         const newChatId = String(created.chatId ?? created.id);
-        const newChats = [
-          { id: newChatId, title: created.chatHeader || "แชตใหม่" },
-        ];
-        setChats(newChats);
+        setChats([{ id: newChatId, title: created.chatHeader || "แชตใหม่" }]);
         setSelectedChatId(newChatId);
       } else {
-        // พยายามเลือกห้องเดิมล่าสุด (ถ้ามี)
-        const lastIdIsValid =
-          !!lastSelectedId &&
-          mapped.some((c) => String(c.id) === String(lastSelectedId));
-        setSelectedChatId(
-          lastIdIsValid ? String(lastSelectedId) : String(mapped[0].id)
-        );
+        const lastIsValid = !!lastSelectedId && mapped.some((c) => String(c.id) === String(lastSelectedId));
+        setSelectedChatId(lastIsValid ? String(lastSelectedId) : String(mapped[0].id));
       }
     } catch (err) {
       console.error("loadUserChats error:", err);
@@ -469,13 +423,11 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** โหลดประวัติแชต + แก้เคส pending ค้างด้วยการเช็คตามเวลา */
   const loadHistory = async (chatId) => {
     if (!chatId) return;
     setLoadingHistory(true);
     persistSuspendedRef.current = true;
 
-    // รีเซ็ตสถานะ pending ทุกอย่างก่อน
     setSending(false);
     setShowStop(false);
     setCurrentTaskId(null);
@@ -485,56 +437,27 @@ export default function ChatScreen({ navigation }) {
 
     try {
       const rows = await getChatQna(chatId);
-
-      // เรียงแน่ๆ ตามเวลา (เก่า -> ใหม่)
-      const sorted = (rows || []).slice().sort((a, b) => {
-        const ta = toTS(a?.createdAt || a?.createAt);
-        const tb = toTS(b?.createdAt || b?.createAt);
-        return ta - tb;
-      });
-
-      // map เป็น messages พร้อม tsNum (ไว้เช็คเวลา)
+      const sorted = (rows || []).slice().sort((a, b) => toTS(a?.createdAt || a?.createAt) - toTS(b?.createdAt || b?.createAt));
       const historyMsgs = sorted.map((r, idx) => {
         const tsNum = toTS(r?.createdAt || r?.createAt || Date.now());
-        return {
-          id: String(r.qNaId || idx),
-          from: r.qNaType === "Q" ? "user" : "bot",
-          text: r.qNaWords,
-          time: formatTS(tsNum),
-          tsNum,
-        };
+        return { id: String(r.qNaId || idx), from: r.qNaType === "Q" ? "user" : "bot", text: r.qNaWords, time: formatTS(tsNum), tsNum };
       });
 
       let nextMsgs = [...historyMsgs];
 
-      // กู้สถานะจาก cache เพื่อชี้ว่า "ตอนออกจากหน้าไปยังรออยู่ไหม"
       const raw = await storage.getItem(STORAGE_PREFIX + chatId);
       if (raw) {
         const saved = JSON.parse(raw);
-
         if (saved?.sending) {
-          // เวลาข้อความ user ล่าสุดที่ค้าง (ถ้ามี)
           const pendingUserTs =
-            toTS(saved?.pendingUserMsg?.time) ||
-            toTS(saved?.pendingUserMsgTs) ||
-            toTS(saved?.savedAt);
+            toTS(saved?.pendingUserMsg?.time) || toTS(saved?.pendingUserMsgTs) || toTS(saved?.savedAt);
 
-          // มีบอทตอบหลังเวลานี้ไหม?
-          const hasBotAfterPending = historyMsgs.some(
-            (m) => m.from === "bot" && m.tsNum >= pendingUserTs
-          );
+          const hasBotAfterPending = historyMsgs.some((m) => m.from === "bot" && m.tsNum >= pendingUserTs);
 
           if (hasBotAfterPending) {
-            // มีคำตอบแล้ว -> เคลียร์ pending ใน cache
-            await storage.setItem(
-              STORAGE_PREFIX + String(chatId),
-              JSON.stringify({ sending: false, savedAt: Date.now() })
-            );
+            await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
           } else {
-            // ยังรอจริง -> โชว์ pending bubble + ตั้งธงส่ง
-            const pendId = saved.currentTaskId
-              ? `pending-${saved.currentTaskId}`
-              : "pending-generic";
+            const pendId = saved.currentTaskId ? `pending-${saved.currentTaskId}` : "pending-generic";
             const existPend = nextMsgs.some((m) => m.id === pendId);
             if (!existPend)
               nextMsgs.push({
@@ -569,17 +492,11 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /* =============================================================================
-   * LIFECYCLE & PERSISTENCE
-   * ========================================================================== */
-  /** จดจำห้องที่เลือกล่าสุด */
+  /* Lifecycle & persistence */
   useEffect(() => {
-    if (selectedChatId) {
-      storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
-    }
+    if (selectedChatId) storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
   }, [selectedChatId]);
 
-  /** เมื่อผู้ใช้ล็อกอิน/เปลี่ยนผู้ใช้ -> โหลดรายชื่อห้อง */
   useEffect(() => {
     if (!user) {
       setChats([]);
@@ -589,63 +506,39 @@ export default function ChatScreen({ navigation }) {
     loadUserChats();
   }, [user]);
 
-  /** เมื่อเปลี่ยนห้อง -> โหลดประวัติห้องนั้น */
   useEffect(() => {
-    if (!selectedChatId) return;
-    loadHistory(selectedChatId);
+    if (selectedChatId) loadHistory(selectedChatId);
   }, [selectedChatId]);
 
-  /** เซฟสถานะ (เช่น กำลังรอ/ข้อความค้าง) ลง cache ของห้อง */
   useEffect(() => {
     (async () => {
-      if (!selectedChatId) return;
-      if (persistSuspendedRef.current) return;
-
+      if (!selectedChatId || persistSuspendedRef.current) return;
       const data = {
         sending,
         currentTaskId,
         pendingQnaId,
         pendingUserMsgId,
-        pendingUserMsg:
-          pendingUserMsgId &&
-          messages.find((m) => m.id === pendingUserMsgId && m.from === "user"),
-        // สำหรับดีด pending ออกเมื่อกลับหน้ามา
+        pendingUserMsg: pendingUserMsgId && messages.find((m) => m.id === pendingUserMsgId && m.from === "user"),
         pendingUserMsgTs: Date.now(),
         savedAt: Date.now(),
       };
-
-      await storage.setItem(
-        STORAGE_PREFIX + String(selectedChatId),
-        JSON.stringify(data)
-      );
+      await storage.setItem(STORAGE_PREFIX + String(selectedChatId), JSON.stringify(data));
     })();
-  }, [
-    sending,
-    currentTaskId,
-    pendingQnaId,
-    pendingUserMsgId,
-    selectedChatId,
-    messages,
-  ]);
+  }, [sending, currentTaskId, pendingQnaId, pendingUserMsgId, selectedChatId, messages]);
 
-  /** เมื่อหน้าโฟกัสกลับมา -> เคลียร์สถานะค้างที่เกิน TTL (กันค้างถาวร) */
   useFocusEffect(
     useCallback(() => {
       (async () => {
         const chatId = selectedChatIdRef.current;
         if (!chatId) return;
-
         const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
         if (!raw) return;
 
         const saved = JSON.parse(raw);
         if (saved?.sending) {
-          const TTL_MS = 30 * 1000; // 30 วินาที
+          const TTL_MS = 30 * 1000;
           if (!saved.savedAt || Date.now() - saved.savedAt > TTL_MS) {
-            await storage.setItem(
-              STORAGE_PREFIX + String(chatId),
-              JSON.stringify({ sending: false, savedAt: Date.now() })
-            );
+            await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
             setSending(false);
             setShowStop(false);
             setCurrentTaskId(null);
@@ -658,44 +551,29 @@ export default function ChatScreen({ navigation }) {
     }, [])
   );
 
-  /** กัน unload (เว็บ) – เผื่ออยากเพิ่ม logic ในอนาคต */
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const handleBeforeUnload = () => {};
     window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-    };
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
-  /* =============================================================================
-   * ACTIONS: AUTH / CHAT CRUD
-   * ========================================================================== */
-  /** กล่องยืนยันลบแชต (RN + Web) */
+  /* Actions */
   const confirmDelete = () => {
-    if (Platform.OS === "web") {
-      return Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?"));
-    }
+    if (Platform.OS === "web") return Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?"));
     return new Promise((resolve) => {
-      Alert.alert(
-        "ยืนยัน",
-        "ต้องการลบแชตนี้หรือไม่?",
-        [
-          { text: "ยกเลิก", style: "cancel", onPress: () => resolve(false) },
-          { text: "ลบ", style: "destructive", onPress: () => resolve(true) },
-        ],
-        { cancelable: true }
-      );
+      Alert.alert("ยืนยัน", "ต้องการลบแชตนี้หรือไม่?", [
+        { text: "ยกเลิก", style: "cancel", onPress: () => resolve(false) },
+        { text: "ลบ", style: "destructive", onPress: () => resolve(true) },
+      ]);
     });
   };
 
-  /** ออกจากระบบ + รีเซ็ต state + นำทาง */
   const handleLogout = async () => {
     try {
       await logout();
-      if (Platform.OS === "web") {
-        window.location.reload();
-      } else {
+      if (Platform.OS === "web") window.location.reload();
+      else {
         setChats([]);
         setSelectedChatId(null);
         setMessages([]);
@@ -706,7 +584,6 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** ลบแชตที่เลือก (พร้อมอัปเดต state) */
   const deleteChat = async (id) => {
     const ok = await confirmDelete();
     if (!ok) return;
@@ -728,34 +605,24 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** เริ่มแก้ชื่อห้อง (inline) */
   const startRenameInline = (id) => {
     const current = chats.find((c) => String(c.id) === String(id));
     setEditingId(String(id));
     setEditingText(current?.title || "");
     closeItemMenu();
   };
-
-  /** ยกเลิกแก้ชื่อห้อง (inline) */
   const cancelRenameInline = () => {
     setEditingId(null);
     setEditingText("");
   };
-
-  /** ยืนยันแก้ชื่อห้อง (inline) */
   const confirmRenameInline = async () => {
     const id = editingId;
     const title = (editingText || "").trim();
     if (!id) return;
-    if (!title) {
-      Alert.alert("กรุณาระบุชื่อแชต");
-      return;
-    }
+    if (!title) return Alert.alert("กรุณาระบุชื่อแชต");
     try {
       await apiEditChat(id, { chatHeader: title });
-      setChats((prev) =>
-        prev.map((c) => (String(c.id) === String(id) ? { ...c, title } : c))
-      );
+      setChats((prev) => prev.map((c) => (String(c.id) === String(id) ? { ...c, title } : c)));
       setEditingId(null);
       setEditingText("");
     } catch (e) {
@@ -764,25 +631,15 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** เพิ่มแชตใหม่และเลือกแชตนั้นทันที */
   const addNewChat = async () => {
     if (!user) {
-      Alert.alert(
-        "โหมดไม่บันทึก",
-        "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ"
-      );
+      Alert.alert("โหมดไม่บันทึก", "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ");
       return;
     }
     try {
-      const created = await createChat({
-        userId: user?.id || user?._id,
-        chatHeader: "แชตใหม่",
-      });
+      const created = await createChat({ userId: user?.id || user?._id, chatHeader: "แชตใหม่" });
       const newChatId = String(created.chatId ?? created.id);
-      const item = {
-        id: newChatId,
-        title: created.chatHeader || "แชตใหม่",
-      };
+      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
       setChats((prev) => [item, ...prev]);
       setSelectedChatId(newChatId);
       setMessages([]);
@@ -792,43 +649,26 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /* =============================================================================
-   * SEND / CANCEL MESSAGE
-   * ========================================================================== */
-  /** ส่งคำถาม -> แสดงข้อความผู้ใช้ + เพิ่ม pending bubble + ยิง API */
+  /* Send / Cancel */
   const sendMessage = async () => {
     const text = inputText.trim();
-    if (!text) {
-      Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
-      return;
-    }
+    if (!text) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
-    // 1) แสดงข้อความผู้ใช้
     const now = Date.now();
-    const userMessage = {
-      id: now.toString(),
-      from: "user",
-      text,
-      time: formatTS(now),
-    };
+    const userMessage = { id: now.toString(), from: "user", text, time: formatTS(now) };
     setPendingUserMsgId(userMessage.id);
     setMessages((prev) => [...prev, userMessage]);
     setInputText("");
     setInputHeight(MIN_H);
-    requestAnimationFrame(() =>
-      listRef.current?.scrollToEnd({ animated: true })
-    );
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
 
-    // 2) ตั้งสถานะกำลังรอ + ตั้ง timer แสดงปุ่มหยุด
     setSending(true);
     setShowStop(false);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
 
-    // 3) แสดง pending bubble (ยังไม่รู้ taskId)
     addPendingBotBubble(null);
 
-    // 4) บันทึก cache (เผื่อผู้ใช้สลับหน้า)
     if (selectedChatId) {
       storage.setItem(
         STORAGE_PREFIX + String(selectedChatId),
@@ -844,19 +684,10 @@ export default function ChatScreen({ navigation }) {
       );
     }
 
-    // 5) ยิง API
     try {
-      const resp = await askQuestion({
-        chatId: user ? selectedChatId : undefined,
-        question: text,
-      });
+      const resp = await askQuestion({ chatId: user ? selectedChatId : undefined, question: text });
 
-      const taskId =
-        resp?.taskId ??
-        resp?.id ??
-        resp?.data?.taskId ??
-        resp?.data?.id ??
-        null;
+      const taskId = resp?.taskId ?? resp?.id ?? resp?.data?.taskId ?? resp?.data?.id ?? null;
       setCurrentTaskId(taskId);
 
       const qId =
@@ -870,7 +701,6 @@ export default function ChatScreen({ navigation }) {
 
       if (taskId) upgradePendingBubble(taskId);
 
-      // อัปเดต cache พร้อม taskId
       if (selectedChatId) {
         storage.setItem(
           STORAGE_PREFIX + String(selectedChatId),
@@ -887,26 +717,17 @@ export default function ChatScreen({ navigation }) {
       }
     } catch (error) {
       console.error("askQuestion error:", error);
-      const botReply = {
-        id: (Date.now() + 1).toString(),
-        from: "bot",
-        text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์",
-        time: formatTS(Date.now()),
-      };
+      const botReply = { id: (Date.now() + 1).toString(), from: "bot", text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์", time: formatTS(Date.now()) };
       setMessages((prev) => [...prev, botReply]);
       hardResetPendingState();
     }
   };
 
-  /** ยกเลิกการส่ง/การรอ (ยิง cancel ไป backend + ล้าง pending bubble) */
   const cancelSending = async () => {
     try {
       if (currentTaskId) {
         try {
-          await cancelAsk(currentTaskId, {
-            qNaId: pendingQnaId || null,
-            chatId: selectedChatIdRef.current || null,
-          });
+          await cancelAsk(currentTaskId, { qNaId: pendingQnaId || null, chatId: selectedChatIdRef.current || null });
         } catch (e) {
           console.warn("cancelAsk error:", e?.message || e);
         }
@@ -916,17 +737,13 @@ export default function ChatScreen({ navigation }) {
         setMessages((prev) => prev.filter((m) => m.id !== pendingUserMsgId));
       }
 
-      if (currentTaskId) {
-        removePendingBotBubble(currentTaskId);
-      } else {
-        removePendingBotBubble(null);
-      }
+      if (currentTaskId) removePendingBotBubble(currentTaskId);
+      else removePendingBotBubble(null);
     } finally {
       hardResetPendingState();
     }
   };
 
-  /** รีเซ็ตสถานะการรอ + ปุ่มหยุด + ค่า task/qna + เซฟ cache ว่าไม่ pending */
   const hardResetPendingState = () => {
     setSending(false);
     setShowStop(false);
@@ -936,101 +753,184 @@ export default function ChatScreen({ navigation }) {
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
 
     const chatId = selectedChatIdRef.current;
-    if (chatId) {
-      storage.setItem(
-        STORAGE_PREFIX + String(chatId),
-        JSON.stringify({ sending: false, savedAt: Date.now() })
-      );
+    if (chatId) storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
+  };
+
+  /* =================== Speech To Text =================== */
+  const [recording, setRecording] = useState(false);
+  const webRecRef = useRef(null);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    const onSpeechStart = () => setRecording(true);
+    const onSpeechEnd = () => setRecording(false);
+    const onSpeechError = (e) => {
+      setRecording(false);
+      console.warn("STT error:", e?.error);
+      Alert.alert("ไมโครโฟน", "ไม่สามารถใช้งานไมโครโฟนได้");
+    };
+    const onSpeechResults = (e) => {
+      const txt = e?.value?.[0] || "";
+      if (txt) setInputText((prev) => (prev ? prev + " " + txt : txt));
+    };
+
+    Voice.onSpeechStart = onSpeechStart;
+    Voice.onSpeechEnd = onSpeechEnd;
+    Voice.onSpeechError = onSpeechError;
+    Voice.onSpeechResults = onSpeechResults;
+
+    return () => {
+      Voice.destroy().then(() => Voice.removeAllListeners());
+    };
+  }, []);
+
+  const ensureAndroidMicPermission = async () => {
+    if (Platform.OS !== "android") return true;
+    try {
+      const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch (e) {
+      console.warn("Permission error:", e);
+      return false;
     }
   };
 
-  /* =============================================================================
-   * RENDERERS
-   * ========================================================================== */
-  /** renderer ของ item แต่ละข้อความในลิสต์ */
+  const getWebRecognizer = () => {
+    if (Platform.OS !== "web") return null;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    return SR ? new SR() : null;
+  };
+
+  const startVoice = async () => {
+    if (Platform.OS === "web") {
+      const rec = getWebRecognizer();
+      if (!rec) return Alert.alert("ไม่รองรับ", "เบราว์เซอร์นี้ไม่รองรับพิมพ์ด้วยเสียง");
+      webRecRef.current = rec;
+      rec.lang = "th-TH";
+      rec.interimResults = false;
+      rec.continuous = false;
+      rec.onstart = () => setRecording(true);
+      rec.onerror = () => setRecording(false);
+      rec.onend = () => setRecording(false);
+      rec.onresult = (e) => {
+        const txt = e?.results?.[0]?.[0]?.transcript || "";
+        if (txt) setInputText((prev) => (prev ? prev + " " + txt : txt));
+      };
+      try {
+        rec.start();
+      } catch {}
+      return;
+    }
+
+    const ok = await ensureAndroidMicPermission();
+    if (!ok) return Alert.alert("ต้องการสิทธิ์", "กรุณาอนุญาตไมโครโฟนเพื่อใช้พิมพ์ด้วยเสียง");
+
+    try {
+      await Voice.destroy();
+      await Voice.start("th-TH");
+    } catch (e) {
+      console.warn("Voice.start error:", e);
+      Alert.alert("ไมโครโฟน", "เริ่มพิมพ์ด้วยเสียงไม่สำเร็จ");
+      setRecording(false);
+    }
+  };
+
+  const stopVoice = async () => {
+    if (Platform.OS === "web") {
+      try {
+        webRecRef.current?.stop?.();
+      } catch {}
+      setRecording(false);
+      return;
+    }
+    try {
+      await Voice.stop();
+    } catch {}
+    setRecording(false);
+  };
+
+  /* =================== Renderers =================== */
   const renderItem = ({ item }) => {
+    const isUser = item.from === "user";
     const isPending = item.pending === true;
+
+    const rowStyle = {
+      flexDirection: isUser ? "row-reverse" : "row",
+      alignItems: "flex-end",
+      gap: 8,
+      marginVertical: 5,
+      paddingHorizontal: 4,
+    };
+
+    const bubbleStyle = [
+      styles.messageWrapper,
+      {
+        backgroundColor: isUser ? C.bubbleUserBg : C.bubbleBotBg,
+        alignSelf: isUser ? "flex-end" : "flex-start",
+      },
+    ];
+
+    const mdStyles = {
+      body: { fontSize: 16, color: isUser ? C.bubbleUserText : C.bubbleBotText },
+      strong: { color: isUser ? C.bubbleUserText : C.bubbleBotText },
+      em: { color: isUser ? C.bubbleUserText : C.bubbleBotText },
+      code_block: { color: isUser ? C.bubbleUserText : C.bubbleBotText, backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9" },
+      blockquote: {
+        color: isUser ? C.bubbleUserText : C.bubbleBotText,
+        backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
+        fontStyle: "italic",
+      },
+    };
+
     return (
-      <View
-        style={[
-          styles.messageWrapper,
-          item.from === "user" ? styles.userWrapper : styles.botWrapper,
-        ]}
-      >
-        {isPending ? (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <ActivityIndicator color="#fff" />
-            <Text style={styles.botMessageText}>กำลังค้นหาคำตอบ...</Text>
-          </View>
-        ) : (
-          <Markdown
-            style={{
-              body:
-                item.from === "user"
-                  ? styles.userMessageText
-                  : styles.botMessageText,
-              strong:
-                item.from === "user"
-                  ? { color: "white" }
-                  : { color: "#ffffffff" },
-              em:
-                item.from === "user"
-                  ? { color: "white" }
-                  : { color: "#ffffffff" },
-              code_block:
-                item.from === "user"
-                  ? { color: "white", backgroundColor: "#333" }
-                  : { color: "#ffffffff", backgroundColor: "#333" },
-              blockquote:
-                item.from === "user"
-                  ? {
-                      color: "white",
-                      backgroundColor: "#333",
-                      fontStyle: "italic",
-                    }
-                  : {
-                      color: "#ffffffff",
-                      backgroundColor: "#333",
-                      fontStyle: "italic",
-                    },
-            }}
-          >
-            {item.text}
-          </Markdown>
-        )}
-        <Text style={styles.timeText}>{item.time}</Text>
+      <View style={rowStyle}>
+        <View
+          style={{
+            width: AVATAR_SIZE,
+            height: AVATAR_SIZE,
+            borderRadius: AVATAR_SIZE / 2,
+            backgroundColor: isUser ? C.avatarUserBg : C.avatarBotBg,
+            alignItems: "center",
+            justifyContent: "center",
+            marginHorizontal: 4,
+          }}
+        >
+          <Icon name={isUser ? "person" : "chatbubble-ellipses"} size={Math.floor(AVATAR_SIZE * 0.56)} color="#ffffff" />
+        </View>
+
+        <View style={bubbleStyle}>
+          {isPending ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <ActivityIndicator color={isDark ? "#fff" : "#000"} />
+              <Text style={{ color: isUser ? C.bubbleUserText : C.bubbleBotText, fontSize: 16 }}>กำลังค้นหาคำตอบ...</Text>
+            </View>
+          ) : (
+            <Markdown style={mdStyles}>{item.text}</Markdown>
+          )}
+          <Text style={[styles.timeText, { color: C.timeText }]}>{item.time}</Text>
+        </View>
       </View>
     );
   };
 
-  /* =============================================================================
-   * DERIVED VALUES
-   * ========================================================================== */
-  /** ระยะ padding ด้านล่างของลิสต์ (กันทับ input) */
-  const listBottomPad =
-    10 + inputHeight + 12 + (insets.bottom || 0) + kbBtmNum + EXTRA_BOTTOM_GAP;
+  const listBottomPad = 10 + inputHeight + 12 + (insets.bottom || 0) + kbBtmNum + EXTRA_BOTTOM_GAP;
 
-  /* =============================================================================
-   * UI
-   * ========================================================================== */
+  /* =================== UI =================== */
   return (
     <SafeAreaView
       style={[
         styles.container,
+        { backgroundColor: C.containerBg },
         Platform.OS !== "web" && { paddingTop: StatusBar.currentHeight || 20 },
       ]}
     >
       {/* Sidebar */}
-      <Animated.View style={[styles.sidebar, { left: sidebarAnim }]}>
+      <Animated.View style={[styles.sidebar, { left: sidebarAnim, backgroundColor: C.sidebarBg }]}>
         <View style={styles.sidebarHeader}>
-          <Text style={styles.sidebarTitle}>
-            {user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}
-          </Text>
+          <Text style={[styles.sidebarTitle, { color: C.sidebarText }]}>{user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}</Text>
           <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <TouchableOpacity
-              onPress={toggleSidebar}
-              style={{ paddingLeft: 8 }}
-            >
+            <TouchableOpacity onPress={toggleSidebar} style={{ paddingLeft: 8 }}>
               <Icon name="close" size={24} color="#333" />
             </TouchableOpacity>
           </View>
@@ -1045,29 +945,23 @@ export default function ChatScreen({ navigation }) {
             chats.map((chat) => {
               const isEditing = String(editingId) === String(chat.id);
               return (
-                <View key={chat.id} style={styles.sidebarItemRow}>
+                <View key={chat.id} style={[styles.sidebarItemRow, { borderColor: C.divider }]}>
                   {isEditing ? (
                     <View style={styles.renameInlineRow}>
                       <TextInput
                         value={editingText}
                         onChangeText={setEditingText}
                         placeholder="ชื่อแชต"
-                        style={styles.renameInlineInput}
+                        style={[styles.renameInlineInput, { borderColor: C.divider, backgroundColor: "#fff" }]}
                         autoFocus
                         onSubmitEditing={confirmRenameInline}
                         returnKeyType="done"
                       />
                       <View style={styles.renameInlineBtns}>
-                        <TouchableOpacity
-                          onPress={confirmRenameInline}
-                          style={styles.inlineIconBtn}
-                        >
+                        <TouchableOpacity onPress={confirmRenameInline} style={styles.inlineIconBtn}>
                           <Icon name="checkmark" size={18} color="#2ecc71" />
                         </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={cancelRenameInline}
-                          style={styles.inlineIconBtn}
-                        >
+                        <TouchableOpacity onPress={cancelRenameInline} style={styles.inlineIconBtn}>
                           <Icon name="close" size={18} color="#e74c3c" />
                         </TouchableOpacity>
                       </View>
@@ -1085,9 +979,8 @@ export default function ChatScreen({ navigation }) {
                           numberOfLines={1}
                           style={[
                             styles.sidebarItemText,
-                            String(selectedChatId) === String(chat.id) && {
-                              fontWeight: "bold",
-                            },
+                            { color: C.sidebarText },
+                            String(selectedChatId) === String(chat.id) && { fontWeight: "bold" },
                           ]}
                         >
                           {chat.title}
@@ -1095,13 +988,7 @@ export default function ChatScreen({ navigation }) {
                       </TouchableOpacity>
 
                       <Pressable
-                        onPress={(e) =>
-                          openItemMenu(
-                            chat.id,
-                            e?.nativeEvent?.pageX ?? 0,
-                            e?.nativeEvent?.pageY ?? 0
-                          )
-                        }
+                        onPress={(e) => openItemMenu(chat.id, e?.nativeEvent?.pageX ?? 0, e?.nativeEvent?.pageY ?? 0)}
                         style={styles.dotButton}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
@@ -1114,90 +1001,81 @@ export default function ChatScreen({ navigation }) {
             })
           )
         ) : (
-          <Text style={{ color: "#555" }}>
-            เข้าสู่ระบบเพื่อสร้างห้องและบันทึกประวัติการสนทนา
-          </Text>
+          <Text style={{ color: "#555" }}>เข้าสู่ระบบเพื่อสร้างห้องและบันทึกประวัติการสนทนา</Text>
         )}
 
         {user && (
           <View style={{ marginTop: "auto" }}>
-            <TouchableOpacity style={styles.sidebarButton} onPress={addNewChat}>
-              <Text style={{ color: "#fff" }}>เพิ่มแชตใหม่</Text>
+            <TouchableOpacity style={[styles.sidebarButton, { backgroundColor: C.headerBg }]} onPress={addNewChat}>
+              <Text style={{ color: isDark ? "#fff" : "#111" }}>เพิ่มแชตใหม่</Text>
             </TouchableOpacity>
           </View>
         )}
       </Animated.View>
 
-      {sidebarOpen && (
-        <TouchableOpacity
-          style={styles.backdrop}
-          activeOpacity={1}
-          onPress={toggleSidebar}
-        />
-      )}
+      {sidebarOpen && <TouchableOpacity style={[styles.backdrop, { backgroundColor: C.overlay }]} activeOpacity={1} onPress={toggleSidebar} />}
 
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: C.headerBg, borderBottomColor: C.divider, borderBottomWidth: 1 }]}>
         <View style={styles.headerSideLeft}>
-          <TouchableOpacity onPress={toggleSidebar}>
-            <Icon name="menu" size={24} color="#fff" />
-          </TouchableOpacity>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <TouchableOpacity onPress={toggleSidebar}>
+              <Icon name="menu" size={24} color={C.headerText} />
+            </TouchableOpacity>
+            {/* โลโก้พุทธธรรม ข้างปุ่มแฮมเบอร์เกอร์ */}
+            <Image
+              source={buddhadhamBG}
+              style={{ width: 34, height: 34, resizeMode: "contain", tintColor: C.logoTint }}
+            />
+          </View>
         </View>
 
         <View pointerEvents="none" style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>พุทธธรรม</Text>
+          <Text style={[styles.headerTitle, { color: C.headerText }]}>พุทธธรรม</Text>
         </View>
 
-        <View style={styles.headerSideRight}>
+        <View style={[styles.headerSideRight, { flexDirection: "row", alignItems: "center", gap: 8 }]}>
+          <TouchableOpacity
+            onPress={toggleTheme}
+            style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: C.chipBg }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Icon name={isDark ? "moon" : "sunny"} size={16} color={C.chipText} />
+              <Text style={{ color: C.chipText, fontSize: 12 }}>{isDark ? "Dark" : "Light"}</Text>
+            </View>
+          </TouchableOpacity>
+
           {user ? (
             <View style={{ flexDirection: "row", alignItems: "center" }}>
-              <View style={styles.userBadge}>
-                <Text style={styles.userNameText} numberOfLines={1}>
+              <View style={[styles.userBadge, { backgroundColor: C.chipBg }]}>
+                <Text style={[styles.userNameText, { color: C.chipText }]} numberOfLines={1}>
                   {user.name || "ผู้ใช้"}
                 </Text>
               </View>
               <TouchableOpacity onPress={handleLogout}>
-                <View style={styles.logoutButton}>
-                  <Text style={styles.logoutText}>ออกจากระบบ</Text>
+                <View style={[styles.logoutButton, { backgroundColor: "transparent" }]}>
+                  <Text style={[styles.logoutText, { color: C.headerText }]}>ออกจากระบบ</Text>
                 </View>
               </TouchableOpacity>
             </View>
           ) : (
             <TouchableOpacity onPress={() => navigation.navigate("Login")}>
-              <View style={styles.loginButton}>
-                <Text style={styles.loginText}>ลงชื่อเข้าใช้</Text>
+              <View style={[styles.loginButton, { backgroundColor: C.chipBg }]}>
+                <Text style={[styles.loginText, { color: C.chipText }]}>ลงชื่อเข้าใช้</Text>
               </View>
             </TouchableOpacity>
           )}
         </View>
       </View>
 
-      {/* Body */}
+      {/* Body (ตัดพื้นหลังเดิมออกแล้ว) */}
       <Animated.View style={{ flex: 1 }}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={styles.background}>
-            {/* background image (ลายน้ำ) */}
-            <View style={styles.bgCenterWrap} pointerEvents="none">
-              <Image
-                source={buddhadhamBG}
-                style={styles.bgImage}
-                resizeMode="contain"
-              />
-            </View>
-
-            {/* ประวัติข้อความ */}
+          <View style={[styles.background, { backgroundColor: C.containerBg }]}>
             {user && loadingHistory ? (
-              <View
-                style={{
-                  flex: 1,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
                 <ActivityIndicator />
-                <Text style={{ color: "#ddd", marginTop: 8 }}>
-                  กำลังโหลดประวัติ...
-                </Text>
+                <Text style={{ color: isDark ? "#ddd" : "#333", marginTop: 8 }}>กำลังโหลดประวัติ...</Text>
               </View>
             ) : (
               <FlatList
@@ -1205,17 +1083,10 @@ export default function ChatScreen({ navigation }) {
                 data={messages}
                 renderItem={renderItem}
                 keyExtractor={(item) => item.id.toString()}
-                contentContainerStyle={{
-                  padding: 10,
-                  paddingBottom: listBottomPad,
-                }}
-                ListFooterComponent={
-                  <View style={{ height: EXTRA_BOTTOM_GAP }} />
-                }
+                contentContainerStyle={{ padding: 10, paddingBottom: listBottomPad }}
+                ListFooterComponent={<View style={{ height: EXTRA_BOTTOM_GAP }} />}
                 keyboardShouldPersistTaps="handled"
-                onContentSizeChange={() =>
-                  listRef.current?.scrollToEnd({ animated: false })
-                }
+                onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
               />
             )}
 
@@ -1223,7 +1094,12 @@ export default function ChatScreen({ navigation }) {
             <Animated.View
               style={[
                 styles.inputContainerAbs,
-                { bottom: kbBottom, paddingBottom: 12 + (insets.bottom || 0) },
+                {
+                  bottom: kbBottom,
+                  paddingBottom: 12 + (insets.bottom || 0),
+                  backgroundColor: C.inputBarBg,
+                  borderTopColor: C.border,
+                },
               ]}
             >
               {Platform.OS === "web" ? (
@@ -1242,9 +1118,10 @@ export default function ChatScreen({ navigation }) {
                   style={{
                     flex: 1,
                     marginRight: 8,
-                    backgroundColor: "#fff",
+                    backgroundColor: C.inputBg,
+                    color: "#111",
                     borderRadius: 20,
-                    border: "none",
+                    border: `1px solid ${C.border}`,
                     outline: "none",
                     resize: "none",
                     padding: `${PAD_V_TOP}px 12px ${PAD_V_BOTTOM}px`,
@@ -1270,6 +1147,10 @@ export default function ChatScreen({ navigation }) {
                       paddingTop: PAD_V_TOP,
                       paddingBottom: PAD_V_BOTTOM,
                       opacity: sending ? 0.6 : 1,
+                      backgroundColor: C.inputBg,
+                      borderColor: C.border,
+                      borderWidth: 1,
+                      color: "#111",
                     },
                   ]}
                   value={inputText}
@@ -1300,6 +1181,19 @@ export default function ChatScreen({ navigation }) {
                 />
               )}
 
+              {/* Mic */}
+              <TouchableOpacity
+                onPress={recording ? stopVoice : startVoice}
+                activeOpacity={0.85}
+                style={[styles.actionButton, { backgroundColor: recording ? C.cancelBtn : C.sendBtn, marginRight: 8 }]}
+                accessibilityRole="button"
+                accessibilityLabel={recording ? "หยุดพิมพ์ด้วยเสียง" : "พิมพ์ด้วยเสียง"}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Icon name={recording ? "mic-off" : "mic"} size={20} color="#fff" />
+              </TouchableOpacity>
+
+              {/* Send / Cancel */}
               {sending ? (
                 <TouchableOpacity
                   onPress={showStop ? cancelSending : undefined}
@@ -1307,17 +1201,13 @@ export default function ChatScreen({ navigation }) {
                   activeOpacity={0.85}
                   style={[
                     styles.actionButton,
-                    showStop ? styles.cancelButton : styles.sendButton,
+                    showStop ? { backgroundColor: C.cancelBtn } : { backgroundColor: C.sendBtn, opacity: 0.6 },
                   ]}
                   accessibilityRole="button"
                   accessibilityLabel={showStop ? "ยกเลิกการส่ง" : "กำลังส่ง..."}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  {showStop ? (
-                    <Icon name="stop" size={20} color="#fff" />
-                  ) : (
-                    <ActivityIndicator color="#fff" />
-                  )}
+                  {showStop ? <Icon name="stop" size={20} color="#fff" /> : <ActivityIndicator color="#fff" />}
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
@@ -1326,11 +1216,7 @@ export default function ChatScreen({ navigation }) {
                   }}
                   disabled={sending || !inputText.trim()}
                   activeOpacity={0.85}
-                  style={[
-                    styles.actionButton,
-                    styles.sendButton,
-                    (sending || !inputText.trim()) && { opacity: 0.6 },
-                  ]}
+                  style={[styles.actionButton, { backgroundColor: C.sendBtn }, (sending || !inputText.trim()) && { opacity: 0.6 }]}
                   accessibilityRole="button"
                   accessibilityLabel="ส่งข้อความ"
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -1344,17 +1230,8 @@ export default function ChatScreen({ navigation }) {
       </Animated.View>
 
       {/* Popup Menu */}
-      <Modal
-        transparent
-        visible={!!menuFor}
-        animationType="fade"
-        onRequestClose={closeItemMenu}
-      >
-        <TouchableOpacity
-          style={styles.popupBackdrop}
-          activeOpacity={1}
-          onPress={closeItemMenu}
-        />
+      <Modal transparent visible={!!menuFor} animationType="fade" onRequestClose={closeItemMenu}>
+        <TouchableOpacity style={styles.popupBackdrop} activeOpacity={1} onPress={closeItemMenu} />
         <View style={[styles.popupMenu, getPopupStyle()]}>
           <View style={styles.popupArrow} />
           <TouchableOpacity
@@ -1388,14 +1265,11 @@ export default function ChatScreen({ navigation }) {
   );
 }
 
-/* =============================================================================
- * STYLES
- * ========================================================================== */
+/* ============================== Styles ============================== */
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#2f3640" },
+  container: { flex: 1 },
 
   header: {
-    backgroundColor: "#1e272e",
     height: 60,
     paddingHorizontal: 10,
     justifyContent: "center",
@@ -1422,61 +1296,31 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "flex-end",
   },
-  headerTitle: { color: "#fff", fontSize: 18, fontWeight: "bold" },
+  headerTitle: { fontSize: 18, fontWeight: "bold" },
 
-  loginButton: {
-    backgroundColor: "#ccc",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 10,
-  },
+  loginButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
   loginText: { fontSize: 14 },
 
-  userBadge: {
-    maxWidth: 160,
-    backgroundColor: "#2f3640",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 10,
-  },
-  userNameText: { color: "#fff", fontSize: 16 },
+  userBadge: { maxWidth: 160, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  userNameText: { fontSize: 16 },
   logoutButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  logoutText: { color: "#fff", fontSize: 14 },
+  logoutText: { fontSize: 14 },
 
   background: { flex: 1 },
 
-  bgCenterWrap: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  bgImage: {
-    width: "70%",
-    aspectRatio: 1,
-    opacity: 0.06,
-    transform: [{ translateY: -50 }],
-  },
-
   messageWrapper: {
     maxWidth: "80%",
-    marginVertical: 5,
     padding: 10,
-    borderRadius: 15,
+    borderRadius: 16,
   },
-  userWrapper: { backgroundColor: "#fff", alignSelf: "flex-end" },
-  botWrapper: { backgroundColor: "#333", alignSelf: "flex-start" },
-  botMessageText: { fontSize: 16, color: "#ffffffff" },
-  userMessageText: { fontSize: 16, color: "#333" },
   timeText: {
     fontSize: 10,
-    color: "#bbb",
     marginTop: 3,
     alignSelf: "flex-end",
   },
 
   input: {
     flex: 1,
-    backgroundColor: "#fff",
     borderRadius: 20,
     paddingHorizontal: 12,
     fontSize: 16,
@@ -1493,8 +1337,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 30,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderColor: "#444",
-    backgroundColor: "#1e272e",
   },
 
   actionButton: {
@@ -1509,8 +1351,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 6,
   },
-  sendButton: { backgroundColor: "#0097e6" },
-  cancelButton: { backgroundColor: "#e74c3c" },
 
   sidebar: {
     position: "absolute",
@@ -1518,7 +1358,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     width: 250,
-    backgroundColor: "#dcdde1",
     padding: 15,
     zIndex: 5,
   },
@@ -1535,13 +1374,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderColor: "#ccc",
   },
   sidebarItemText: { paddingRight: 8 },
   dotButton: { paddingHorizontal: 4, paddingVertical: 4 },
 
   sidebarButton: {
-    backgroundColor: "#1e272e",
     padding: 10,
     borderRadius: 8,
     alignItems: "center",
@@ -1554,7 +1391,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: "rgba(0,0,0,0.3)",
     zIndex: 4,
   },
 
@@ -1593,26 +1429,8 @@ const styles = StyleSheet.create({
   },
   popupItem: { paddingVertical: 10, paddingHorizontal: 14 },
 
-  renameInlineRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    width: "100%",
-  },
-  renameInlineInput: {
-    flex: 1,
-    minWidth: 0,
-    borderWidth: 1,
-    borderColor: "#ccc",
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: "#fff",
-    fontSize: 14,
-  },
-  renameInlineBtns: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
+  renameInlineRow: { flexDirection: "row", alignItems: "center", gap: 6, width: "100%" },
+  renameInlineInput: { flex: 1, minWidth: 0, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, fontSize: 14 },
+  renameInlineBtns: { flexDirection: "row", alignItems: "center" },
   inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
 });

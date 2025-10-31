@@ -20,13 +20,12 @@
         "foregroundImage": "./assets/buddhadham.png",
         "backgroundColor": "#ffffff"
       },
+      "permissions": ["RECORD_AUDIO"],
       "edgeToEdgeEnabled": true
     },
     "web": {
       "favicon": "./assets/buddhadham.png"
     },
-    "plugins": [
-      "expo-secure-store"
-    ]
+    "plugins": ["expo-secure-store"]
   }
 }
