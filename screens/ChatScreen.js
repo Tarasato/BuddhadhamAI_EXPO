@@ -142,15 +142,15 @@ export default function ChatScreen({ navigation }) {
             sidebarText: "#222222",
             divider: "#B9BDC6",
             bubbleUserBg: "#FFFFFF",
-            bubbleUserText: "#1F2937",
+            bubbleUserText: "#0F172A",
             bubbleBotBg: "#2E3140",
             bubbleBotText: "#FFFFFF",
             timeText: "#D1D5DB",
             inputBg: "#FFFFFF",
             inputBarBg: "#2F3644",
             border: "#404656",
-            sendBtn: "#3BA4F8",
-            cancelBtn: "#EF4444",
+            sendBtn: "#60A5FA",
+            cancelBtn: "#F05252",
             overlay: "rgba(0,0,0,0.35)",
             avatarRing: "#111827",
             logoTint: "#FFFFFF",
@@ -166,7 +166,7 @@ export default function ChatScreen({ navigation }) {
             sidebarText: "#1F2937",
             divider: "#D7DDEA",
             bubbleUserBg: "#FFFFFF",
-            bubbleUserText: "#111827",
+            bubbleUserText: "#0F172A",
             bubbleBotBg: "#E9EDF6",
             bubbleBotText: "#0F172A",
             timeText: "#6B7280",
@@ -174,7 +174,7 @@ export default function ChatScreen({ navigation }) {
             inputBarBg: "#FFFFFF",
             border: "#D4D9E5",
             sendBtn: "#2563EB",
-            cancelBtn: "#EF4444",
+            cancelBtn: "#DC2626",
             overlay: "rgba(0,0,0,0.18)",
             avatarRing: "#93C5FD",
             logoTint: "#000000",
@@ -988,10 +988,10 @@ export default function ChatScreen({ navigation }) {
 
     const rowStyle = {
       flexDirection: isUser ? "row-reverse" : "row",
-      alignItems: "flex-end",
+      alignItems: "flex-start",
       gap: 10,
       marginVertical: 6,
-      paddingHorizontal: 12,
+      paddingHorizontal: 10,
     };
 
     const bubbleStyle = [
@@ -999,12 +999,12 @@ export default function ChatScreen({ navigation }) {
       {
         backgroundColor: isUser ? C.bubbleUserBg : C.bubbleBotBg,
         alignSelf: isUser ? "flex-end" : "flex-start",
-        borderTopLeftRadius: isUser ? 16 : 4,
-        borderTopRightRadius: isUser ? 4 : 16,
+        borderTopLeftRadius: isUser ? 16 : 6,
+        borderTopRightRadius: isUser ? 6 : 16,
         borderBottomLeftRadius: 16,
         borderBottomRightRadius: 16,
-        shadowColor: isUser ? "#000" : "#000",
-        shadowOpacity: isUser ? 0.06 : 0.12,
+        shadowColor: "#000",
+        shadowOpacity: 0.1,
         shadowRadius: 8,
         shadowOffset: { width: 0, height: 3 },
         elevation: 2,
@@ -1608,7 +1608,6 @@ export default function ChatScreen({ navigation }) {
 /* ============================== Styles ============================== */
 const styles = StyleSheet.create({
   container: { flex: 1 },
-
   header: {
     height: 60,
     paddingHorizontal: 12,
@@ -1654,13 +1653,11 @@ const styles = StyleSheet.create({
   background: { flex: 1 },
 
   messageWrapper: {
-    maxWidth: "78%",
+    maxWidth: "92%",
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
-  timeText: {
-    fontSize: 10,
-  },
+  timeText: { fontSize: 10 },
 
   input: {
     flex: 1,
@@ -1677,7 +1674,7 @@ const styles = StyleSheet.create({
     right: 0,
     flexDirection: "row",
     alignItems: "flex-end",
-    paddingHorizontal: 30,
+    paddingHorizontal: 20,
     paddingTop: 12,
     borderTopWidth: 1,
   },
@@ -1689,7 +1686,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     shadowColor: "#000",
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.12,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 3 },
     elevation: 6,
