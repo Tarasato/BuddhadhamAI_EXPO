@@ -329,7 +329,7 @@ export default function ChatScreen({ navigation }) {
     id: taskId ? pendingBubbleId(taskId) : "pending-generic",
     from: "bot",
     pending: true,
-    text: "กำลังค้นหาคำตอบ...",
+    text: "กำลังประมวลผล...",
     time: formatTS(Date.now()),
   });
   const addPendingBotBubble = (taskId) => {
@@ -993,7 +993,7 @@ export default function ChatScreen({ navigation }) {
     const GAP_BETWEEN = 10;
     const screenW = Dimensions.get("window").width;
 
-    const HALF_W = Math.floor(screenW * 0.45) - (ROW_HPAD + GAP_BETWEEN);
+    const HALF_W = Math.floor(screenW * 0.) - (ROW_HPAD + GAP_BETWEEN);
     const BUBBLE_MAX_W = Math.max(160, HALF_W);
 
     const bubbleStyle = [
@@ -1052,7 +1052,7 @@ export default function ChatScreen({ navigation }) {
                     fontSize: 16,
                   }}
                 >
-                  กำลังค้นหาคำตอบ...
+                  กำลังประมวลผล...
                 </Text>
               </View>
             ) : (
