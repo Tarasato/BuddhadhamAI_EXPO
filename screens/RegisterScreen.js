@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { registerApi } from "../src/api/auth";
 
-/** ================= Theme Key (UI only) ================= */
+/** ================= Theme Key ================= */
 const THEME_KEY = "ui_theme_dark";
 
 const storage = {
@@ -54,7 +54,7 @@ export default function RegisterScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  /* ------------ Theme (UI only) ------------ */
+  /* ------------ Theme ------------ */
   const [isDark, setIsDark] = useState(true);
   useEffect(() => {
     (async () => {

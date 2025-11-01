@@ -108,7 +108,7 @@ export default function LoginScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  /** ------------------- ล็อกอิน (ลอจิกเดิม) ------------------- */
+  /** ------------------- ล็อกอิน ------------------- */
   const handleLogin = async () => {
     setError("");
     const userInputData = userInput.trim();

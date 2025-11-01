@@ -1377,7 +1377,7 @@ export default function ChatScreen({ navigation }) {
                 height: "85%",
                 opacity: isDark ? 0.08 : 0.12,
                 alignSelf: "center",
-                top: "7%",
+                top: "3%",
                 tintColor: isDark ? "#000" : "#334155",
                 resizeMode: "contain",
               }}
