@@ -14,10 +14,8 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { registerApi } from "../src/api/auth";
 
-/**
- * RegisterScreen (เพิ่มสลับธีม — UI เท่านั้น)
- */
-const THEME_KEY = "ui_theme_dark"; // 'true' | 'false'
+/** ================= Theme Key (UI only) ================= */
+const THEME_KEY = "ui_theme_dark";
 
 const storage = {
   async getItem(key) {
@@ -44,7 +42,7 @@ const storage = {
 };
 
 export default function RegisterScreen({ navigation }) {
-  /** ---------- Local state ---------- */
+  /* ------------ State ------------ */
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [userPassword, setUserPassword] = useState("");
@@ -56,7 +54,7 @@ export default function RegisterScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  /** ---------- Theme (UI only) ---------- */
+  /* ------------ Theme (UI only) ------------ */
   const [isDark, setIsDark] = useState(true);
   useEffect(() => {
     (async () => {
@@ -75,39 +73,44 @@ export default function RegisterScreen({ navigation }) {
     () =>
       isDark
         ? {
-            containerBg: "#2f3640",
-            headerText: "#ffffff",
-            fieldBg: "#ffffff",
-            fieldText: "#111111",
+            containerBg: "#4A5368",
+            headerText: "#F8FAFC",
+            cardBg: "#F7F8FB",
+            cardBorder: "#E5E9F2",
+            fieldBg: "#EDEFF3",
+            fieldText: "#111827",
             fieldPlaceholder: "#9AA0A6",
-            buttonBg: "#0097e6",
-            buttonText: "#ffffff",
-            linkText: "#d1d5db",
-            errorText: "#ff7675",
+            buttonBg: "#6B7280",
+            buttonText: "#FFFFFF",
+            linkText: "#374151",
+            errorText: "#FF6B6B",
             chipBg: "rgba(255,255,255,0.12)",
-            chipText: "#ffffff",
-            border: "#3f4650",
-            eye: "#555",
+            chipText: "#E5E7EB",
+            border: "#D9DEE8",
+            eye: "#727985",
+            shadow: "#000",
           }
         : {
-            containerBg: "#f6f7fb",
-            headerText: "#111111",
-            fieldBg: "#ffffff",
-            fieldText: "#111111",
-            fieldPlaceholder: "#6b7280",
-            buttonBg: "#2563eb",
-            buttonText: "#ffffff",
+            containerBg: "#EEF2F7",
+            headerText: "#0F172A",
+            cardBg: "#FFFFFF",
+            cardBorder: "#E6ECF5",
+            fieldBg: "#F3F4F6",
+            fieldText: "#0F172A",
+            fieldPlaceholder: "#6B7280",
+            buttonBg: "#6B7280",
+            buttonText: "#FFFFFF",
             linkText: "#374151",
-            errorText: "#ef4444",
-            chipBg: "#e9eef6",
-            chipText: "#111111",
-            border: "#d9dee5",
-            eye: "#555",
+            errorText: "#EF4444",
+            chipBg: "#E8EDF6",
+            chipText: "#0F172A",
+            border: "#E5EAF2",
+            eye: "#6B7280",
+            shadow: "#000",
           },
     [isDark]
   );
 
-  /** ---------- Derived state ---------- */
   const trimmed = useMemo(
     () => ({
       name: userName.trim(),
@@ -118,18 +121,18 @@ export default function RegisterScreen({ navigation }) {
     [userName, userEmail, userPassword, confirm]
   );
 
-  /** ---------- Helpers ---------- */
   const validate = () => {
     if (!trimmed.name) return "กรุณากรอกชื่อผู้ใช้";
     if (!trimmed.email) return "กรุณากรอกอีเมล";
     const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed.email);
     if (!emailOk) return "อีเมลไม่ถูกต้อง";
-    if (trimmed.password.length < 6) return "รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร";
-    if (trimmed.password !== trimmed.confirm) return "รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน";
+    if (trimmed.password.length < 6)
+      return "รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร";
+    if (trimmed.password !== trimmed.confirm)
+      return "รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน";
     return "";
   };
 
-  /** ---------- Actions (คงเดิม ไม่เปลี่ยนลอจิก) ---------- */
   const handleRegister = async () => {
     if (loading) return;
     const v = validate();
@@ -137,7 +140,6 @@ export default function RegisterScreen({ navigation }) {
       setError(v);
       return;
     }
-
     setError("");
     setLoading(true);
     try {
@@ -148,14 +150,14 @@ export default function RegisterScreen({ navigation }) {
       });
       navigation.replace("Login");
     } catch (e) {
-      const msg = e?.response?.data?.message || e?.message || "สมัครสมาชิกไม่สำเร็จ";
+      const msg =
+        e?.response?.data?.message || e?.message || "สมัครสมาชิกไม่สำเร็จ";
       setError(msg);
     } finally {
       setLoading(false);
     }
   };
 
-  /** ---------- UI ---------- */
   return (
     <SafeAreaView
       style={[
@@ -175,7 +177,7 @@ export default function RegisterScreen({ navigation }) {
         <Ionicons name="arrow-back" size={24} color={C.headerText} />
       </TouchableOpacity>
 
-      {/* ปุ่มสลับธีม (ขวาบน) */}
+      {/* ปุ่มสลับธีม */}
       <TouchableOpacity
         onPress={toggleTheme}
         style={[
@@ -195,151 +197,221 @@ export default function RegisterScreen({ navigation }) {
         </Text>
       </TouchableOpacity>
 
-      <Text style={[styles.title, { color: C.headerText }]}>สมัครสมาชิก</Text>
-
-      {!!error && <Text style={[styles.errorText, { color: C.errorText }]}>{error}</Text>}
-
-      {/* ชื่อผู้ใช้ */}
-      <TextInput
-        style={[
-          styles.input,
-          { backgroundColor: C.fieldBg, borderColor: C.border, color: C.fieldText },
-        ]}
-        placeholder="ชื่อผู้ใช้"
-        placeholderTextColor={C.fieldPlaceholder}
-        value={userName}
-        onChangeText={setUserName}
-        autoCapitalize="words"
-        returnKeyType="next"
-      />
-
-      {/* อีเมล */}
-      <TextInput
-        style={[
-          styles.input,
-          { backgroundColor: C.fieldBg, borderColor: C.border, color: C.fieldText },
-        ]}
-        placeholder="อีเมล"
-        placeholderTextColor={C.fieldPlaceholder}
-        value={userEmail}
-        onChangeText={setUserEmail}
-        autoCapitalize="none"
-        keyboardType="email-address"
-        returnKeyType="next"
-      />
-
-      {/* รหัสผ่าน */}
-      <View style={styles.inputWrapper}>
-        <TextInput
+      <View style={styles.contentWrapper}>
+        <View
           style={[
-            styles.input,
-            { paddingRight: 42, backgroundColor: C.fieldBg, borderColor: C.border, color: C.fieldText },
+            styles.card,
+            {
+              backgroundColor: C.cardBg,
+              borderColor: C.cardBorder,
+              shadowColor: C.shadow,
+            },
           ]}
-          placeholder="รหัสผ่าน"
-          placeholderTextColor={C.fieldPlaceholder}
-          secureTextEntry={!showPass}
-          value={userPassword}
-          onChangeText={setUserPassword}
-          returnKeyType="next"
-          onSubmitEditing={() => {}}
-        />
-        <TouchableOpacity
-          style={styles.eye}
-          onPress={() => setShowPass((s) => !s)}
-          accessibilityRole="button"
-          accessibilityLabel={showPass ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน"}
         >
-          <Ionicons name={showPass ? "eye-off" : "eye"} size={20} color={C.eye} />
-        </TouchableOpacity>
+          <Text style={[styles.title, { color: "#111" }]}>ลงทะเบียน</Text>
+
+          {!!error && (
+            <Text style={[styles.errorText, { color: C.errorText }]}>
+              {error}
+            </Text>
+          )}
+
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: C.fieldBg,
+                color: C.fieldText,
+                borderColor: C.cardBorder,
+              },
+            ]}
+            placeholder="ชื่อผู้ใช้"
+            placeholderTextColor={C.fieldPlaceholder}
+            value={userName}
+            onChangeText={setUserName}
+            autoCapitalize="words"
+            returnKeyType="next"
+          />
+
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: C.fieldBg,
+                color: C.fieldText,
+                borderColor: C.cardBorder,
+              },
+            ]}
+            placeholder="อีเมล"
+            placeholderTextColor={C.fieldPlaceholder}
+            value={userEmail}
+            onChangeText={setUserEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            returnKeyType="next"
+          />
+
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  paddingRight: 42,
+                  backgroundColor: C.fieldBg,
+                  color: C.fieldText,
+                  borderColor: C.cardBorder,
+                },
+              ]}
+              placeholder="รหัสผ่าน"
+              placeholderTextColor={C.fieldPlaceholder}
+              secureTextEntry={!showPass}
+              value={userPassword}
+              onChangeText={setUserPassword}
+              returnKeyType="next"
+            />
+            <TouchableOpacity
+              style={styles.eye}
+              onPress={() => setShowPass((s) => !s)}
+              accessibilityRole="button"
+              accessibilityLabel={showPass ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน"}
+            >
+              <Ionicons
+                name={showPass ? "eye-off" : "eye"}
+                size={20}
+                color={C.eye}
+              />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  paddingRight: 42,
+                  backgroundColor: C.fieldBg,
+                  color: C.fieldText,
+                  borderColor: C.cardBorder,
+                },
+              ]}
+              placeholder="ยืนยันรหัสผ่าน"
+              placeholderTextColor={C.fieldPlaceholder}
+              secureTextEntry={!showConfirm}
+              value={confirm}
+              onChangeText={setConfirm}
+              returnKeyType="go"
+              onSubmitEditing={() => {
+                if (!loading) handleRegister();
+              }}
+            />
+            <TouchableOpacity
+              style={styles.eye}
+              onPress={() => setShowConfirm((s) => !s)}
+              accessibilityRole="button"
+              accessibilityLabel={
+                showConfirm ? "ซ่อนรหัสผ่านยืนยัน" : "แสดงรหัสผ่านยืนยัน"
+              }
+            >
+              <Ionicons
+                name={showConfirm ? "eye-off" : "eye"}
+                size={20}
+                color={C.eye}
+              />
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.button,
+              { backgroundColor: C.buttonBg },
+              loading && { opacity: 0.7 },
+            ]}
+            onPress={handleRegister}
+            disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="สมัครสมาชิก"
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={[styles.buttonText, { color: C.buttonText }]}>
+                สมัครสมาชิก
+              </Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => navigation.navigate("Login")}
+            style={{ marginTop: 12 }}
+          >
+            <Text style={[styles.linkText, { color: C.linkText }]}>
+              มีบัญชีอยู่แล้ว? ลงชื่อเข้าใช้
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
-
-      {/* ยืนยันรหัสผ่าน */}
-      <View style={styles.inputWrapper}>
-        <TextInput
-          style={[
-            styles.input,
-            { paddingRight: 42, backgroundColor: C.fieldBg, borderColor: C.border, color: C.fieldText },
-          ]}
-          placeholder="ยืนยันรหัสผ่าน"
-          placeholderTextColor={C.fieldPlaceholder}
-          secureTextEntry={!showConfirm}
-          value={confirm}
-          onChangeText={setConfirm}
-          returnKeyType="go"
-          onSubmitEditing={() => {
-            if (!loading) handleRegister();
-          }}
-        />
-        <TouchableOpacity
-          style={styles.eye}
-          onPress={() => setShowConfirm((s) => !s)}
-          accessibilityRole="button"
-          accessibilityLabel={showConfirm ? "ซ่อนรหัสผ่านยืนยัน" : "แสดงรหัสผ่านยืนยัน"}
-        >
-          <Ionicons name={showConfirm ? "eye-off" : "eye"} size={20} color={C.eye} />
-        </TouchableOpacity>
-      </View>
-
-      {/* ปุ่มสมัครสมาชิก */}
-      <TouchableOpacity
-        style={[styles.button, { backgroundColor: C.buttonBg }, loading && { opacity: 0.7 }]}
-        onPress={handleRegister}
-        disabled={loading}
-        accessibilityRole="button"
-        accessibilityLabel="สมัครสมาชิก"
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={[styles.buttonText, { color: C.buttonText }]}>สมัครสมาชิก</Text>
-        )}
-      </TouchableOpacity>
-
-      {/* ลิงก์ไปหน้า Login */}
-      <TouchableOpacity onPress={() => navigation.navigate("Login")}>
-        <Text style={[styles.linkText, { color: C.linkText }]}>มีบัญชีแล้ว? เข้าสู่ระบบ</Text>
-      </TouchableOpacity>
     </SafeAreaView>
   );
 }
 
-/** ---------- Styles (ฐาน) ---------- */
+/** ================= Styles ================= */
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 20,
     paddingLeft: 30,
     paddingRight: 30,
   },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 20,
-    textAlign: "center",
+
+  contentWrapper: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 24,
   },
+
+  card: {
+    width: "90%",
+    maxWidth: 440,
+    borderRadius: 10,
+    paddingHorizontal: 24,
+    paddingVertical: 22,
+    borderWidth: 1,
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+
+  title: {
+    fontSize: 20,
+    fontWeight: "bold",
+    textAlign: "center",
+    marginBottom: 14,
+  },
+
+  errorText: { textAlign: "center", marginBottom: 8 },
 
   inputWrapper: { position: "relative" },
   eye: { position: "absolute", right: 12, top: 12, padding: 6 },
 
   input: {
     borderRadius: 10,
-    paddingHorizontal: 15,
+    paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
-    marginBottom: 15,
+    marginBottom: 12,
     borderWidth: 1,
   },
 
   button: {
-    padding: 15,
+    padding: 12,
     borderRadius: 10,
     alignItems: "center",
-    marginTop: 5,
+    marginTop: 4,
   },
   buttonText: { fontSize: 16, fontWeight: "bold" },
 
-  linkText: { marginTop: 15, textAlign: "center" },
-  errorText: { textAlign: "center", marginBottom: 10 },
+  linkText: { textAlign: "center", fontSize: 13 },
 
   backButton: {
     position: "absolute",
@@ -350,7 +422,7 @@ const styles = StyleSheet.create({
   },
   themeToggle: {
     position: "absolute",
-    top: Platform.OS === "web" ? 20 : (StatusBar.currentHeight || 20),
+    top: Platform.OS === "web" ? 20 : StatusBar.currentHeight || 20,
     right: 15,
     paddingHorizontal: 10,
     paddingVertical: 6,

@@ -64,7 +64,7 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
     ...(d != null ? { d: clamp(Number(d) || 0.75, 0, 1) } : {}),
   };
 
-  // 🛑 cancel request ก่อนหน้า (ถ้ามี)
+  // 🛑 cancel request ก่อนหน้า
   if (inflightController) {
     try {
       inflightController.abort();

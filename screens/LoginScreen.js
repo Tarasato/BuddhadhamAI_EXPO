@@ -12,15 +12,13 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { loginApi } from "../src/api/auth";
 import { useAuth } from "../src/auth/AuthContext";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/**
- * หน้าล็อกอินของระบบ (เพิ่มสลับโหมดมืด/สว่าง — UI เท่านั้น)
- */
-const THEME_KEY = "ui_theme_dark"; // 'true' | 'false'
+/** ============== Theme Key (UI only) ============== */
+const THEME_KEY = "ui_theme_dark";
 
 const storage = {
   async getItem(key) {
@@ -68,48 +66,51 @@ export default function LoginScreen({ navigation }) {
     () =>
       isDark
         ? {
-            // dark
-            containerBg: "#2f3640",
-            headerText: "#ffffff",
-            fieldBg: "#ffffff",
-            fieldText: "#111111",
+            containerBg: "#4A5368",
+            headerText: "#F8FAFC",
+            cardBg: "#F7F8FB",
+            cardBorder: "#E5E9F2",
+            fieldBg: "#EDEFF3",
+            fieldText: "#111827",
             fieldPlaceholder: "#9AA0A6",
-            buttonBg: "#0097e6",
-            buttonText: "#ffffff",
-            linkText: "#d1d5db",
-            errorText: "#ff7675",
+            buttonBg: "#6B7280",
+            buttonText: "#FFFFFF",
+            linkText: "#4B5563",
+            errorText: "#FF6B6B",
             chipBg: "rgba(255,255,255,0.12)",
-            chipText: "#ffffff",
-            border: "#3f4650",
+            chipText: "#E5E7EB",
+            border: "#D9DEE8",
+            shadow: "#000",
           }
         : {
-            // light
-            containerBg: "#f6f7fb",
-            headerText: "#111111",
-            fieldBg: "#ffffff",
-            fieldText: "#111111",
-            fieldPlaceholder: "#6b7280",
-            buttonBg: "#2563eb",
-            buttonText: "#ffffff",
+            containerBg: "#EEF2F7",
+            headerText: "#0F172A",
+            cardBg: "#FFFFFF",
+            cardBorder: "#E6ECF5",
+            fieldBg: "#F3F4F6",
+            fieldText: "#0F172A",
+            fieldPlaceholder: "#6B7280",
+            buttonBg: "#6B7280",
+            buttonText: "#FFFFFF",
             linkText: "#374151",
-            errorText: "#ef4444",
-            chipBg: "#e9eef6",
-            chipText: "#111111",
-            border: "#d9dee5",
+            errorText: "#EF4444",
+            chipBg: "#E8EDF6",
+            chipText: "#0F172A",
+            border: "#E5EAF2",
+            shadow: "#000",
           },
     [isDark]
   );
 
   /** ------------------- State ------------------- */
-  const [userInput, setUserInput] = useState(""); // อีเมล / username
-  const [userPassword, setUserPassword] = useState(""); // รหัสผ่าน
-  const [loading, setLoading] = useState(false); // กำลังโหลด
-  const [error, setError] = useState(""); // ข้อความ error
+  const [userInput, setUserInput] = useState("");
+  const [userPassword, setUserPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  /** ------------------- ฟังก์ชันล็อกอิน (ไม่เปลี่ยนลอจิก) ------------------- */
+  /** ------------------- ล็อกอิน (ลอจิกเดิม) ------------------- */
   const handleLogin = async () => {
     setError("");
-
     const userInputData = userInput.trim();
     const passwordData = userPassword.trim();
     if (!userInputData || !passwordData) {
@@ -129,12 +130,8 @@ export default function LoginScreen({ navigation }) {
       }
 
       await login(user);
-
       navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: "Chat" }],
-        })
+        CommonActions.reset({ index: 0, routes: [{ name: "Chat" }] })
       );
     } catch (e) {
       const msg =
@@ -163,7 +160,7 @@ export default function LoginScreen({ navigation }) {
         <Ionicons name="arrow-back" size={24} color={C.headerText} />
       </TouchableOpacity>
 
-      {/* ปุ่มสลับธีม (มุมขวาบน) */}
+      {/* ปุ่มสลับธีม */}
       <TouchableOpacity
         onPress={toggleTheme}
         style={[
@@ -183,116 +180,148 @@ export default function LoginScreen({ navigation }) {
         </Text>
       </TouchableOpacity>
 
-      {/* หัวข้อ */}
-      <Text style={[styles.title, { color: C.headerText }]}>เข้าสู่ระบบ</Text>
-      {!!error && (
-        <Text style={[styles.errorText, { color: C.errorText }]}>{error}</Text>
-      )}
+      <View style={styles.contentWrapper}>
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: C.cardBg,
+              borderColor: C.cardBorder,
+              shadowColor: C.shadow,
+            },
+          ]}
+        >
+          <Text style={[styles.title, { color: "#111" }]}>ลงชื่อเข้าใช้</Text>
 
-      {/* ช่องกรอกอีเมล */}
-      <TextInput
-        style={[
-          styles.input,
-          {
-            backgroundColor: C.fieldBg,
-            borderColor: C.border,
-            color: C.fieldText,
-          },
-        ]}
-        placeholder="อีเมล"
-        placeholderTextColor={C.fieldPlaceholder}
-        autoCapitalize="none"
-        keyboardType="email-address"
-        value={userInput}
-        onChangeText={setUserInput}
-      />
+          {!!error && (
+            <Text style={[styles.errorText, { color: C.errorText }]}>
+              {error}
+            </Text>
+          )}
 
-      {/* ช่องกรอกรหัสผ่าน */}
-      <TextInput
-        style={[
-          styles.input,
-          {
-            backgroundColor: C.fieldBg,
-            borderColor: C.border,
-            color: C.fieldText,
-          },
-        ]}
-        placeholder="รหัสผ่าน"
-        placeholderTextColor={C.fieldPlaceholder}
-        secureTextEntry
-        value={userPassword}
-        onChangeText={setUserPassword}
-      />
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: C.fieldBg,
+                color: C.fieldText,
+                borderColor: C.cardBorder,
+              },
+            ]}
+            placeholder="อีเมล"
+            placeholderTextColor={C.fieldPlaceholder}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            value={userInput}
+            onChangeText={setUserInput}
+          />
 
-      {/* ปุ่มล็อกอิน */}
-      <TouchableOpacity
-        style={[
-          styles.button,
-          { backgroundColor: C.buttonBg },
-          loading && { opacity: 0.7 },
-        ]}
-        onPress={handleLogin}
-        disabled={loading}
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={[styles.buttonText, { color: C.buttonText }]}>
-            เข้าสู่ระบบ
-          </Text>
-        )}
-      </TouchableOpacity>
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: C.fieldBg,
+                color: C.fieldText,
+                borderColor: C.cardBorder,
+              },
+            ]}
+            placeholder="รหัสผ่าน"
+            placeholderTextColor={C.fieldPlaceholder}
+            secureTextEntry
+            value={userPassword}
+            onChangeText={setUserPassword}
+          />
 
-      {/* ลิงก์ไปสมัครสมาชิก */}
-      <TouchableOpacity onPress={() => navigation.navigate("Register")}>
-        <Text style={[styles.linkText, { color: C.linkText }]}>
-          ยังไม่มีบัญชี? สมัครสมาชิก
-        </Text>
-      </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.button,
+              { backgroundColor: C.buttonBg },
+              loading && { opacity: 0.7 },
+            ]}
+            onPress={handleLogin}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={[styles.buttonText, { color: C.buttonText }]}>
+                ลงชื่อเข้าใช้
+              </Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => navigation.navigate("Register")}
+            style={{ marginTop: 12 }}
+          >
+            <Text style={[styles.linkText, { color: C.linkText }]}>
+              ยังไม่มีบัญชีอยู่? สมัครสมาชิก
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     </SafeAreaView>
   );
 }
 
-/** ------------------- Styles (ฐาน) ------------------- */
+/** ================= Styles ================= */
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: 20,
     paddingLeft: 30,
     paddingRight: 30,
   },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 20,
-    textAlign: "center",
+
+  contentWrapper: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 24,
   },
+
+  card: {
+    width: "90%",
+    maxWidth: 440,
+    borderRadius: 10,
+    paddingHorizontal: 24,
+    paddingVertical: 22,
+    borderWidth: 1,
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+
+  title: {
+    fontSize: 20,
+    fontWeight: "bold",
+    textAlign: "center",
+    marginBottom: 14,
+  },
+
   input: {
     borderRadius: 10,
-    paddingHorizontal: 15,
+    paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
-    marginBottom: 15,
+    marginBottom: 12,
     borderWidth: 1,
   },
+
   button: {
-    padding: 15,
+    padding: 12,
     borderRadius: 10,
     alignItems: "center",
-    marginTop: 5,
+    marginTop: 4,
   },
   buttonText: {
     fontSize: 16,
     fontWeight: "bold",
   },
-  linkText: {
-    marginTop: 15,
-    textAlign: "center",
-  },
-  errorText: {
-    textAlign: "center",
-    marginBottom: 10,
-  },
+
+  linkText: { textAlign: "center", fontSize: 13 },
+  errorText: { textAlign: "center", marginBottom: 8 },
+
   backButton: {
     position: "absolute",
     top: Platform.OS === "web" ? 20 : StatusBar.currentHeight || 20,
