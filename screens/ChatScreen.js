@@ -59,6 +59,7 @@ const PAD_V_TOP = 10;
 const PAD_V_BOTTOM = 10;
 const EXTRA_BOTTOM_GAP = 24;
 const AVATAR_SIZE = 44;
+const CORNER_NEAR_AVATAR = 6;
 
 const STORAGE_PREFIX = "chat_state_v1:";
 const LAST_CHAT_ID_KEY = "last_selected_chat_id";
@@ -986,13 +987,14 @@ export default function ChatScreen({ navigation }) {
     const isUser = item.from === "user";
     const isPending = item.pending === true;
 
-    const rowStyle = {
-      flexDirection: isUser ? "row-reverse" : "row",
-      alignItems: "flex-start",
-      gap: 10,
-      marginVertical: 6,
-      paddingHorizontal: 10,
-    };
+    const cornerShift = AVATAR_SIZE / 2 - CORNER_NEAR_AVATAR;
+
+    const ROW_HPAD = 10;
+    const GAP_BETWEEN = 10;
+    const screenW = Dimensions.get("window").width;
+
+    const HALF_W = Math.floor(screenW * 0.45) - (ROW_HPAD + GAP_BETWEEN);
+    const BUBBLE_MAX_W = Math.max(160, HALF_W);
 
     const bubbleStyle = [
       styles.messageWrapper,
@@ -1008,37 +1010,15 @@ export default function ChatScreen({ navigation }) {
         shadowRadius: 8,
         shadowOffset: { width: 0, height: 3 },
         elevation: 2,
+
+        marginTop: cornerShift,
+        maxWidth: BUBBLE_MAX_W,
+        flexShrink: 1,
       },
     ];
 
-    const mdStyles = {
-      body: {
-        fontSize: 16,
-        color: isUser ? C.bubbleUserText : C.bubbleBotText,
-        lineHeight: 22,
-      },
-      strong: { color: isUser ? C.bubbleUserText : C.bubbleBotText },
-      em: { color: isUser ? C.bubbleUserText : C.bubbleBotText },
-      code_block: {
-        color: isUser ? C.bubbleUserText : C.bubbleBotText,
-        backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
-        borderRadius: 8,
-        padding: 8,
-      },
-      blockquote: {
-        color: isUser ? C.bubbleUserText : C.bubbleBotText,
-        backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
-        fontStyle: "italic",
-        borderLeftWidth: 3,
-        borderLeftColor: isDark ? "#64748b" : "#c7d2fe",
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        borderRadius: 8,
-      },
-    };
-
     return (
-      <View style={rowStyle}>
+      <View style={[styles.msgRow, isUser ? styles.rowR : styles.rowL]}>
         {/* Avatar */}
         <View
           style={{
@@ -1058,7 +1038,7 @@ export default function ChatScreen({ navigation }) {
           />
         </View>
 
-        {/* Bubble + time */}
+        {/* Bubble + เวลา */}
         <View>
           <View style={bubbleStyle}>
             {isPending ? (
@@ -1076,17 +1056,54 @@ export default function ChatScreen({ navigation }) {
                 </Text>
               </View>
             ) : (
-              <Markdown style={mdStyles}>{item.text}</Markdown>
+              <Markdown
+                style={{
+                  body: {
+                    fontSize: 16,
+                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
+                    lineHeight: 22,
+                    ...(Platform.OS === "web"
+                      ? { wordBreak: "break-word", overflowWrap: "anywhere" }
+                      : {}),
+                  },
+                  strong: {
+                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
+                  },
+                  em: { color: isUser ? C.bubbleUserText : C.bubbleBotText },
+                  code_block: {
+                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
+                    backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
+                    borderRadius: 8,
+                    padding: 8,
+                  },
+                  blockquote: {
+                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
+                    backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
+                    fontStyle: "italic",
+                    borderLeftWidth: 3,
+                    borderLeftColor: isDark ? "#64748b" : "#c7d2fe",
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    borderRadius: 8,
+                  },
+                }}
+              >
+                {item.text}
+              </Markdown>
             )}
           </View>
+
+          {/* เวลา แยกบรรทัด ไม่ไปรบกวนการจัดกึ่งกลาง */}
           <Text
             style={[
               styles.timeText,
               {
                 color: C.timeText,
-                textAlign: isUser ? "right" : "left",
                 marginHorizontal: 6,
                 marginTop: 4,
+                textAlign: isUser ? "right" : "left",
+                maxWidth: BUBBLE_MAX_W,
+                alignSelf: isUser ? "flex-end" : "flex-start",
               },
             ]}
           >
@@ -1653,7 +1670,6 @@ const styles = StyleSheet.create({
   background: { flex: 1 },
 
   messageWrapper: {
-    maxWidth: "92%",
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
@@ -1786,4 +1802,13 @@ const styles = StyleSheet.create({
   },
   renameInlineBtns: { flexDirection: "row", alignItems: "center" },
   inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+  msgRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingHorizontal: 10,
+    marginVertical: 6,
+  },
+  rowR: { flexDirection: "row-reverse" },
+  rowL: { flexDirection: "row" },
 });
