@@ -763,7 +763,8 @@ export default function ChatScreen({ navigation }) {
     const raw = inputText.trim();
     if (!raw) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
-    const text = `'${wrapSingle(raw)}'`;
+    const text = wrapSingle(raw)
+    // const text = `'${wrapSingle(raw)}'`;
 
     let chatIdToUse = null;
     let createdNewRoom = false;
@@ -824,7 +825,7 @@ export default function ChatScreen({ navigation }) {
     try {
       const resp = await askQuestion({
         chatId: user ? chatIdToUse : undefined,
-        question: text,
+        question: `'${text}'`,
       });
 
       const taskId =
