@@ -273,7 +273,6 @@ export default function ChatScreen({ navigation }) {
       const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
       setChats([item]);
       setSelectedChatId(newChatId);
-      setMessages([]);
       return newChatId;
     } catch (e) {
       console.error("ensureActiveChat create error:", e);
@@ -512,6 +511,18 @@ export default function ChatScreen({ navigation }) {
               JSON.stringify({ sending: false, savedAt: Date.now() })
             );
           } else {
+            if (
+              saved?.pendingUserMsg &&
+              !nextMsgs.some((m) => m.id === saved.pendingUserMsg.id)
+            ) {
+              const u = saved.pendingUserMsg;
+              nextMsgs.push({
+                ...u,
+                from: "user",
+                tsNum: toTS(u.time) || Date.now(),
+              });
+            }
+
             const pendId = saved.currentTaskId
               ? `pending-${saved.currentTaskId}`
               : "pending-generic";
@@ -537,6 +548,8 @@ export default function ChatScreen({ navigation }) {
           }
         }
       }
+
+      nextMsgs.sort((a, b) => (a.tsNum || 0) - (b.tsNum || 0));
 
       setMessages(nextMsgs);
       setTimeout(() => scrollToBottom(false), 0);
@@ -1107,7 +1120,6 @@ export default function ChatScreen({ navigation }) {
     );
   };
 
-  
   const listContentPadBottom = 16;
 
   // UI
@@ -1675,7 +1687,6 @@ const styles = StyleSheet.create({
     minHeight: MIN_H,
   },
 
-  
   inputContainerFixed: {
     flexDirection: "row",
     alignItems: "flex-end",
