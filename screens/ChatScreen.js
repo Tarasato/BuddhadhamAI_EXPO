@@ -68,7 +68,7 @@ const THEME_KEY = "ui_theme_dark";
 
 // ============================== Helpers ==============================
 
-const wrapSingle = (s) => `'${String(s).replace(/'/g, "\\'")}'`;
+const wrapSingle = (s) => String(s).replace(/'/g, "\\'");
 
 const storage = {
   async getItem(key) {
@@ -763,7 +763,7 @@ export default function ChatScreen({ navigation }) {
     const raw = inputText.trim();
     if (!raw) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
-    const text = wrapSingle(raw);
+    const text = `'${wrapSingle(raw)}'`;
 
     let chatIdToUse = null;
     let createdNewRoom = false;
