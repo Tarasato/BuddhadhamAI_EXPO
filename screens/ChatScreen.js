@@ -255,15 +255,19 @@ export default function ChatScreen({ navigation }) {
 
   // Ensure active chat
   const ensureActiveChat = async () => {
-    if (!user) return null;
+    if (!user) return { id: null, created: false };
+
     const currentId = selectedChatIdRef.current;
-    if (currentId && chats.some((c) => String(c.id) === String(currentId)))
-      return currentId;
+    if (currentId && chats.some((c) => String(c.id) === String(currentId))) {
+      return { id: currentId, created: false };
+    }
+
     if (chats.length > 0) {
       const id = String(chats[0].id);
       setSelectedChatId(id);
-      return id;
+      return { id, created: false };
     }
+
     try {
       const created = await createChat({
         userId: user?.id || user?._id,
@@ -273,11 +277,11 @@ export default function ChatScreen({ navigation }) {
       const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
       setChats([item]);
       setSelectedChatId(newChatId);
-      return newChatId;
+      return { id: newChatId, created: true };
     } catch (e) {
       console.error("ensureActiveChat create error:", e);
       Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
-      return null;
+      return { id: null, created: false };
     }
   };
 
@@ -757,8 +761,12 @@ export default function ChatScreen({ navigation }) {
     if (!text) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
     let chatIdToUse = null;
+    let createdNewRoom = false;
+
     if (user) {
-      chatIdToUse = await ensureActiveChat();
+      const res = await ensureActiveChat();
+      chatIdToUse = res?.id || null;
+      createdNewRoom = !!res?.created;
       if (!chatIdToUse) {
         const botReply = {
           id: (Date.now() + 1).toString(),
@@ -772,38 +780,40 @@ export default function ChatScreen({ navigation }) {
     }
 
     const now = Date.now();
-    const userMessage = {
-      id: now.toString(),
-      from: "user",
-      text,
-      time: formatTS(now),
-    };
-    setPendingUserMsgId(userMessage.id);
-    setMessages((prev) => [...prev, userMessage]);
     setInputText("");
     setInputHeight(MIN_H);
-    scrollToBottom(true);
 
     setSending(true);
     setShowStop(false);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
 
-    addPendingBotBubble(null);
+    if (!createdNewRoom) {
+      const userMsg = {
+        id: String(now),
+        from: "user",
+        text,
+        time: formatTS(now),
+      };
+      setPendingUserMsgId(userMsg.id);
+      setMessages((prev) => [...prev, userMsg]);
+      scrollToBottom(true);
+      addPendingBotBubble(null);
 
-    if (chatIdToUse) {
-      storage.setItem(
-        STORAGE_PREFIX + String(chatIdToUse),
-        JSON.stringify({
-          sending: true,
-          currentTaskId: null,
-          pendingQnaId: null,
-          pendingUserMsgId: userMessage.id,
-          pendingUserMsg: userMessage,
-          pendingUserMsgTs: now,
-          savedAt: now,
-        })
-      );
+      if (chatIdToUse) {
+        storage.setItem(
+          STORAGE_PREFIX + String(chatIdToUse),
+          JSON.stringify({
+            sending: true,
+            currentTaskId: null,
+            pendingQnaId: null,
+            pendingUserMsgId: userMsg.id,
+            pendingUserMsg: userMsg,
+            pendingUserMsgTs: now,
+            savedAt: now,
+          })
+        );
+      }
     }
 
     try {
@@ -831,19 +841,30 @@ export default function ChatScreen({ navigation }) {
 
       if (taskId) upgradePendingBubble(taskId);
 
-      if (chatIdToUse) {
+      if (chatIdToUse && !createdNewRoom) {
         storage.setItem(
           STORAGE_PREFIX + String(chatIdToUse),
           JSON.stringify({
             sending: true,
             currentTaskId: taskId,
             pendingQnaId: qId,
-            pendingUserMsgId: userMessage.id,
-            pendingUserMsg: userMessage,
+            pendingUserMsgId: String(now),
+            pendingUserMsg: {
+              id: String(now),
+              from: "user",
+              text,
+              time: formatTS(now),
+            },
             pendingUserMsgTs: now,
             savedAt: Date.now(),
           })
         );
+      }
+
+      if (createdNewRoom && chatIdToUse) {
+        await loadHistory(chatIdToUse);
+        addPendingBotBubble(taskId || null);
+        scrollToBottom(true);
       }
     } catch (error) {
       console.error("askQuestion error:", error);
