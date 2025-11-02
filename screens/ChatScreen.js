@@ -67,6 +67,9 @@ const LAST_CHAT_ID_KEY = "last_selected_chat_id";
 const THEME_KEY = "ui_theme_dark";
 
 // ============================== Helpers ==============================
+
+const wrapSingle = (s) => `'${String(s).replace(/'/g, "\\'")}'`;
+
 const storage = {
   async getItem(key) {
     try {
@@ -757,8 +760,10 @@ export default function ChatScreen({ navigation }) {
 
   // Send / Cancel
   const sendMessage = async () => {
-    const text = inputText.trim();
-    if (!text) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
+    const raw = inputText.trim();
+    if (!raw) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
+
+    const text = wrapSingle(raw);
 
     let chatIdToUse = null;
     let createdNewRoom = false;
