@@ -108,6 +108,40 @@ const toTS = (v) => {
   const n = typeof v === "number" ? v : Date.parse(v);
   return Number.isFinite(n) ? n : 0;
 };
+// เรียกใช้ก่อนยิงคำถาม
+const ensureActiveChat = async () => {
+  if (!user) return null;
+
+  const currentId = selectedChatIdRef.current;
+  if (currentId && chats.some((c) => String(c.id) === String(currentId))) {
+    return currentId;
+  }
+
+  // เลือกห้องแรก
+  if (chats.length > 0) {
+    const id = String(chats[0].id);
+    setSelectedChatId(id);
+    return id;
+  }
+
+  // สร้างใหม่
+  try {
+    const created = await createChat({
+      userId: user?.id || user?._id,
+      chatHeader: "แชตใหม่",
+    });
+    const newChatId = String(created.chatId ?? created.id);
+    const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
+    setChats([item]);
+    setSelectedChatId(newChatId);
+    setMessages([]);
+    return newChatId;
+  } catch (e) {
+    console.error("ensureActiveChat create error:", e);
+    Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+    return null;
+  }
+};
 
 /* ============================== Component ============================== */
 export default function ChatScreen({ navigation }) {
@@ -749,6 +783,23 @@ export default function ChatScreen({ navigation }) {
     const text = inputText.trim();
     if (!text) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
+    // ถ้าไม่มีห้องแชต ให้สร้างก่อนส่งคำถาม
+    let chatIdToUse = null;
+    if (user) {
+      chatIdToUse = await ensureActiveChat();
+      if (!chatIdToUse) {
+        const botReply = {
+          id: (Date.now() + 1).toString(),
+          from: "bot",
+          text: "ไม่สามารถเตรียมห้องแชตได้ กรุณาลองอีกครั้ง",
+          time: formatTS(Date.now()),
+        };
+        setMessages((prev) => [...prev, botReply]);
+        return;
+      }
+    }
+    // โหมด guest จะไม่ใช้ chatId
+
     const now = Date.now();
     const userMessage = {
       id: now.toString(),
@@ -771,9 +822,10 @@ export default function ChatScreen({ navigation }) {
 
     addPendingBotBubble(null);
 
-    if (selectedChatId) {
+    // เซฟสถานะลง storage
+    if (chatIdToUse) {
       storage.setItem(
-        STORAGE_PREFIX + String(selectedChatId),
+        STORAGE_PREFIX + String(chatIdToUse),
         JSON.stringify({
           sending: true,
           currentTaskId: null,
@@ -788,7 +840,7 @@ export default function ChatScreen({ navigation }) {
 
     try {
       const resp = await askQuestion({
-        chatId: user ? selectedChatId : undefined,
+        chatId: user ? chatIdToUse : undefined,
         question: text,
       });
 
@@ -811,9 +863,10 @@ export default function ChatScreen({ navigation }) {
 
       if (taskId) upgradePendingBubble(taskId);
 
-      if (selectedChatId) {
+      // อัปเดต storage
+      if (chatIdToUse) {
         storage.setItem(
-          STORAGE_PREFIX + String(selectedChatId),
+          STORAGE_PREFIX + String(chatIdToUse),
           JSON.stringify({
             sending: true,
             currentTaskId: taskId,
