@@ -108,40 +108,6 @@ const toTS = (v) => {
   const n = typeof v === "number" ? v : Date.parse(v);
   return Number.isFinite(n) ? n : 0;
 };
-// เรียกใช้ก่อนยิงคำถาม
-const ensureActiveChat = async () => {
-  if (!user) return null;
-
-  const currentId = selectedChatIdRef.current;
-  if (currentId && chats.some((c) => String(c.id) === String(currentId))) {
-    return currentId;
-  }
-
-  // เลือกห้องแรก
-  if (chats.length > 0) {
-    const id = String(chats[0].id);
-    setSelectedChatId(id);
-    return id;
-  }
-
-  // สร้างใหม่
-  try {
-    const created = await createChat({
-      userId: user?.id || user?._id,
-      chatHeader: "แชตใหม่",
-    });
-    const newChatId = String(created.chatId ?? created.id);
-    const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
-    setChats([item]);
-    setSelectedChatId(newChatId);
-    setMessages([]);
-    return newChatId;
-  } catch (e) {
-    console.error("ensureActiveChat create error:", e);
-    Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
-    return null;
-  }
-};
 
 /* ============================== Component ============================== */
 export default function ChatScreen({ navigation }) {
@@ -287,6 +253,40 @@ export default function ChatScreen({ navigation }) {
   useEffect(() => {
     if (Platform.OS === "web") adjustWebHeight();
   }, []);
+  // เรียกใช้ก่อนยิงคำถาม
+  const ensureActiveChat = async () => {
+    if (!user) return null;
+
+    const currentId = selectedChatIdRef.current;
+    if (currentId && chats.some((c) => String(c.id) === String(currentId))) {
+      return currentId;
+    }
+
+    // เลือกห้องแรก
+    if (chats.length > 0) {
+      const id = String(chats[0].id);
+      setSelectedChatId(id);
+      return id;
+    }
+
+    // สร้างใหม่
+    try {
+      const created = await createChat({
+        userId: user?.id || user?._id,
+        chatHeader: "แชตใหม่",
+      });
+      const newChatId = String(created.chatId ?? created.id);
+      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
+      setChats([item]);
+      setSelectedChatId(newChatId);
+      setMessages([]);
+      return newChatId;
+    } catch (e) {
+      console.error("ensureActiveChat create error:", e);
+      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+      return null;
+    }
+  };
 
   /* Keyboard shift */
   useEffect(() => {
