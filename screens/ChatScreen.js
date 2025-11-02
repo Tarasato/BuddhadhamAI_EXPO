@@ -1,6 +1,3 @@
-// ChatScreen.js
-// คอมโพเนนต์หลักของหน้าพูดคุย: ธีม/แชต/ประวัติ/ข้อความเข้าออก/STT + แถบพิมพ์ไม่ทับ FlatList
-
 import React, {
   useRef,
   useState,
@@ -113,7 +110,6 @@ const toTS = (v) => {
 
 // ============================== Component ==============================
 export default function ChatScreen({ navigation }) {
-  // Context/Env
   const { on, subscribeTask } = useWS();
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
@@ -1111,10 +1107,10 @@ export default function ChatScreen({ navigation }) {
     );
   };
 
-  // กันชนด้านล่างของ FlatList (input ไม่ทับแล้ว จึงใช้ padding ต่ำๆ)
+  
   const listContentPadBottom = 16;
 
-  // UI หลัก
+  // UI
   return (
     <SafeAreaView
       style={[
@@ -1361,7 +1357,7 @@ export default function ChatScreen({ navigation }) {
         </View>
       </View>
 
-      {/* Body + Input (ไม่ทับกันเพราะ input ไม่ absolute) */}
+      {/* Body + Input */}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -1421,7 +1417,7 @@ export default function ChatScreen({ navigation }) {
               />
             )}
 
-            {/* Input Bar (ไม่ absolute) */}
+            {/* Input Bar */}
             <View
               style={[
                 styles.inputContainerFixed,
@@ -1679,7 +1675,7 @@ const styles = StyleSheet.create({
     minHeight: MIN_H,
   },
 
-  // แถบพิมพ์แบบติดล่าง (ไม่ absolute)
+  
   inputContainerFixed: {
     flexDirection: "row",
     alignItems: "flex-end",
