@@ -1,3 +1,6 @@
+// ChatScreen.js
+// คอมโพเนนต์หลักของหน้าพูดคุย: ธีม/แชต/ประวัติ/ข้อความเข้าออก/STT + แถบพิมพ์ไม่ทับ FlatList
+
 import React, {
   useRef,
   useState,
@@ -25,6 +28,7 @@ import {
   TouchableWithoutFeedback,
   View,
   PermissionsAndroid,
+  KeyboardAvoidingView,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import Markdown from "react-native-markdown-display";
@@ -51,7 +55,7 @@ import {
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/* ============================== Config ============================== */
+// ============================== Config ==============================
 const MIN_H = 40;
 const MAX_H = 140;
 const LINE_H = 20;
@@ -65,7 +69,7 @@ const STORAGE_PREFIX = "chat_state_v1:";
 const LAST_CHAT_ID_KEY = "last_selected_chat_id";
 const THEME_KEY = "ui_theme_dark";
 
-/* ============================== Helpers ============================== */
+// ============================== Helpers ==============================
 const storage = {
   async getItem(key) {
     try {
@@ -91,7 +95,6 @@ const storage = {
 };
 
 const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
-
 const formatTS = (d) =>
   new Date(d).toLocaleString("th-TH", {
     year: "numeric",
@@ -102,20 +105,20 @@ const formatTS = (d) =>
     second: "2-digit",
     hour12: false,
   });
-
 const toTS = (v) => {
   if (!v) return 0;
   const n = typeof v === "number" ? v : Date.parse(v);
   return Number.isFinite(n) ? n : 0;
 };
 
-/* ============================== Component ============================== */
+// ============================== Component ==============================
 export default function ChatScreen({ navigation }) {
+  // Context/Env
   const { on, subscribeTask } = useWS();
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
 
-  /* Theme */
+  // Theme
   const [isDark, setIsDark] = useState(true);
   useEffect(() => {
     (async () => {
@@ -184,7 +187,7 @@ export default function ChatScreen({ navigation }) {
     [isDark]
   );
 
-  /* Pending/Task */
+  // Async State
   const [sending, setSending] = useState(false);
   const awaitingRef = useRef(false);
   useEffect(() => {
@@ -203,23 +206,23 @@ export default function ChatScreen({ navigation }) {
   const [pendingQnaId, setPendingQnaId] = useState(null);
   const [pendingUserMsgId, setPendingUserMsgId] = useState(null);
 
-  /* Chat UI */
+  // Chat/UI State
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarAnim = useState(new Animated.Value(-260))[0];
-
-  /* Input height */
   const [inputHeight, setInputHeight] = useState(MIN_H);
 
-  /* Keyboard shift */
-  const kbBottom = useRef(new Animated.Value(0)).current;
-  const [kbBtmNum, setKbBtmNum] = useState(0);
-
-  /* List ref */
+  // List/Scroll
   const listRef = useRef(null);
+  const scrollToBottom = (animated = true) => {
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated });
+      setTimeout(() => listRef.current?.scrollToEnd({ animated }), 60);
+    });
+  };
 
-  /* Chats */
+  // Chats
   const [chats, setChats] = useState([]);
   const [selectedChatId, setSelectedChatId] = useState(null);
   const [loadingChats, setLoadingChats] = useState(false);
@@ -229,16 +232,16 @@ export default function ChatScreen({ navigation }) {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
 
-  /* Popup menu */
+  // Popup / Rename
   const [menuFor, setMenuFor] = useState(null);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
 
-  /* Persist guard */
+  // Persist Guard
   const persistSuspendedRef = useRef(false);
 
-  /* Web autosize */
+  // Web autosize
   const webRef = useRef(null);
   const adjustWebHeight = () => {
     if (Platform.OS !== "web") return;
@@ -253,30 +256,25 @@ export default function ChatScreen({ navigation }) {
   useEffect(() => {
     if (Platform.OS === "web") adjustWebHeight();
   }, []);
-  // เรียกใช้ก่อนยิงคำถาม
+
+  // Ensure active chat
   const ensureActiveChat = async () => {
     if (!user) return null;
-
     const currentId = selectedChatIdRef.current;
-    if (currentId && chats.some((c) => String(c.id) === String(currentId))) {
+    if (currentId && chats.some((c) => String(c.id) === String(currentId)))
       return currentId;
-    }
-
-    // เลือกห้องแรก
     if (chats.length > 0) {
       const id = String(chats[0].id);
       setSelectedChatId(id);
       return id;
     }
-
-    // สร้างใหม่
     try {
       const created = await createChat({
         userId: user?.id || user?._id,
         chatHeader: "แชตใหม่",
       });
-      const newChatId = String(created.chatId ?? created.id);
-      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
+      const newChatId = String(created?.chatId ?? created?.id);
+      const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
       setChats([item]);
       setSelectedChatId(newChatId);
       setMessages([]);
@@ -288,48 +286,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /* Keyboard shift */
-  useEffect(() => {
-    const showEvt =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvt =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-
-    const onShow = (e) => {
-      const kh = e?.endCoordinates?.height ?? 0;
-      const bottom = Math.max(0, kh - (insets.bottom || 0));
-      setKbBtmNum(bottom);
-      Animated.timing(kbBottom, {
-        toValue: bottom,
-        duration: e?.duration ?? 220,
-        useNativeDriver: false,
-      }).start();
-    };
-    const onHide = (e) => {
-      setKbBtmNum(0);
-      Animated.timing(kbBottom, {
-        toValue: 0,
-        duration: e?.duration ?? 200,
-        useNativeDriver: false,
-      }).start();
-    };
-
-    const s1 = Keyboard.addListener(showEvt, onShow);
-    const s2 = Keyboard.addListener(hideEvt, onHide);
-    return () => {
-      s1.remove();
-      s2.remove();
-    };
-  }, [insets.bottom, kbBottom]);
-
-  /* Auto scroll */
-  useEffect(() => {
-    requestAnimationFrame(() =>
-      listRef.current?.scrollToEnd({ animated: true })
-    );
-  }, [messages.length]);
-
-  /* Popup helpers */
+  // Sidebar / Popup helpers
   const openItemMenu = (id, x, y) => {
     setMenuFor(id);
     setMenuPos({ x, y });
@@ -346,8 +303,6 @@ export default function ChatScreen({ navigation }) {
       width: MW,
     };
   };
-
-  /* Sidebar */
   const toggleSidebar = () => {
     const toOpen = !sidebarOpen;
     Animated.timing(sidebarAnim, {
@@ -357,7 +312,7 @@ export default function ChatScreen({ navigation }) {
     }).start(() => setSidebarOpen(toOpen));
   };
 
-  /* Pending Bubbles */
+  // Pending bubbles
   const pendingBubbleId = (taskId) => `pending-${taskId}`;
   const makePendingBubble = (taskId) => ({
     id: taskId ? pendingBubbleId(taskId) : "pending-generic",
@@ -397,7 +352,7 @@ export default function ChatScreen({ navigation }) {
     });
   };
 
-  /* WS handlers */
+  // WS handlers
   useEffect(() => {
     const doneHandler = (payload) => {
       const matchesTask =
@@ -450,9 +405,12 @@ export default function ChatScreen({ navigation }) {
         if (idx >= 0) {
           const copy = [...prev];
           copy.splice(idx, 1, newMsg);
+          setTimeout(() => scrollToBottom(true), 0);
           return copy;
         }
-        return [...prev, newMsg];
+        const next = [...prev, newMsg];
+        setTimeout(() => scrollToBottom(true), 0);
+        return next;
       });
 
       hardResetPendingState();
@@ -468,12 +426,11 @@ export default function ChatScreen({ navigation }) {
     return () => unsubscribe?.();
   }, [subscribeTask, currentTaskId]);
 
-  /* Load chats/history */
+  // Load chats/history
   const loadUserChats = async () => {
     if (!user?.id && !user?._id) return;
     setLoadingChats(true);
     const lastSelectedId = await storage.getItem(LAST_CHAT_ID_KEY);
-
     try {
       const list = await getUserChats(user.id || user._id);
       const mapped = (list || []).map((c) => ({
@@ -487,8 +444,8 @@ export default function ChatScreen({ navigation }) {
           userId: user.id || user._id,
           chatHeader: "แชตใหม่",
         });
-        const newChatId = String(created.chatId ?? created.id);
-        setChats([{ id: newChatId, title: created.chatHeader || "แชตใหม่" }]);
+        const newChatId = String(created?.chatId ?? created?.id);
+        setChats([{ id: newChatId, title: created?.chatHeader || "แชตใหม่" }]);
         setSelectedChatId(newChatId);
       } else {
         const lastIsValid =
@@ -586,6 +543,7 @@ export default function ChatScreen({ navigation }) {
       }
 
       setMessages(nextMsgs);
+      setTimeout(() => scrollToBottom(false), 0);
     } catch (err) {
       console.error("loadHistory error:", err);
       Alert.alert("ผิดพลาด", "ไม่สามารถโหลดประวัติแชตได้");
@@ -596,7 +554,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /* Lifecycle & persistence */
+  // Lifecycle & persist
   useEffect(() => {
     if (selectedChatId)
       storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
@@ -650,7 +608,6 @@ export default function ChatScreen({ navigation }) {
         if (!chatId) return;
         const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
         if (!raw) return;
-
         const saved = JSON.parse(raw);
         if (saved?.sending) {
           const TTL_MS = 30 * 1000;
@@ -678,7 +635,13 @@ export default function ChatScreen({ navigation }) {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
-  /* Actions */
+  useEffect(() => {
+    scrollToBottom(true);
+    const t = setTimeout(() => scrollToBottom(true), 120);
+    return () => clearTimeout(t);
+  }, [messages.length, sending, currentTaskId]);
+
+  // Actions: delete/rename/logout
   const confirmDelete = () => {
     if (Platform.OS === "web")
       return Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?"));
@@ -767,23 +730,23 @@ export default function ChatScreen({ navigation }) {
         userId: user?.id || user?._id,
         chatHeader: "แชตใหม่",
       });
-      const newChatId = String(created.chatId ?? created.id);
-      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
+      const newChatId = String(created?.chatId ?? created?.id);
+      const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
       setChats((prev) => [item, ...prev]);
       setSelectedChatId(newChatId);
       setMessages([]);
+      setTimeout(() => scrollToBottom(false), 0);
     } catch (err) {
       console.error("createChat error:", err);
       Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
     }
   };
 
-  /* Send / Cancel */
+  // Send / Cancel
   const sendMessage = async () => {
     const text = inputText.trim();
     if (!text) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
-    // ถ้าไม่มีห้องแชต ให้สร้างก่อนส่งคำถาม
     let chatIdToUse = null;
     if (user) {
       chatIdToUse = await ensureActiveChat();
@@ -798,7 +761,6 @@ export default function ChatScreen({ navigation }) {
         return;
       }
     }
-    // โหมด guest จะไม่ใช้ chatId
 
     const now = Date.now();
     const userMessage = {
@@ -811,9 +773,7 @@ export default function ChatScreen({ navigation }) {
     setMessages((prev) => [...prev, userMessage]);
     setInputText("");
     setInputHeight(MIN_H);
-    requestAnimationFrame(() =>
-      listRef.current?.scrollToEnd({ animated: true })
-    );
+    scrollToBottom(true);
 
     setSending(true);
     setShowStop(false);
@@ -822,7 +782,6 @@ export default function ChatScreen({ navigation }) {
 
     addPendingBotBubble(null);
 
-    // เซฟสถานะลง storage
     if (chatIdToUse) {
       storage.setItem(
         STORAGE_PREFIX + String(chatIdToUse),
@@ -863,7 +822,6 @@ export default function ChatScreen({ navigation }) {
 
       if (taskId) upgradePendingBubble(taskId);
 
-      // อัปเดต storage
       if (chatIdToUse) {
         storage.setItem(
           STORAGE_PREFIX + String(chatIdToUse),
@@ -903,11 +861,9 @@ export default function ChatScreen({ navigation }) {
           console.warn("cancelAsk error:", e?.message || e);
         }
       }
-
       if (pendingUserMsgId) {
         setMessages((prev) => prev.filter((m) => m.id !== pendingUserMsgId));
       }
-
       if (currentTaskId) removePendingBotBubble(currentTaskId);
       else removePendingBotBubble(null);
     } finally {
@@ -922,7 +878,6 @@ export default function ChatScreen({ navigation }) {
     setPendingQnaId(null);
     setPendingUserMsgId(null);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
-
     const chatId = selectedChatIdRef.current;
     if (chatId)
       storage.setItem(
@@ -931,13 +886,12 @@ export default function ChatScreen({ navigation }) {
       );
   };
 
-  /* =================== Speech To Text =================== */
+  // Speech To Text
   const [recording, setRecording] = useState(false);
   const webRecRef = useRef(null);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
-
     const onSpeechStart = () => setRecording(true);
     const onSpeechEnd = () => setRecording(false);
     const onSpeechError = (e) => {
@@ -949,12 +903,10 @@ export default function ChatScreen({ navigation }) {
       const txt = e?.value?.[0] || "";
       if (txt) setInputText((prev) => (prev ? prev + " " + txt : txt));
     };
-
     Voice.onSpeechStart = onSpeechStart;
     Voice.onSpeechEnd = onSpeechEnd;
     Voice.onSpeechError = onSpeechError;
     Voice.onSpeechResults = onSpeechResults;
-
     return () => {
       Voice.destroy().then(() => Voice.removeAllListeners());
     };
@@ -1003,14 +955,12 @@ export default function ChatScreen({ navigation }) {
       } catch {}
       return;
     }
-
     const ok = await ensureAndroidMicPermission();
     if (!ok)
       return Alert.alert(
         "ต้องการสิทธิ์",
         "กรุณาอนุญาตไมโครโฟนเพื่อใช้พิมพ์ด้วยเสียง"
       );
-
     try {
       await Voice.destroy();
       await Voice.start("th-TH");
@@ -1035,17 +985,15 @@ export default function ChatScreen({ navigation }) {
     setRecording(false);
   };
 
-  /* =================== Renderers =================== */
+  // Render message item
   const renderItem = ({ item }) => {
     const isUser = item.from === "user";
     const isPending = item.pending === true;
 
     const cornerShift = AVATAR_SIZE / 2 - CORNER_NEAR_AVATAR;
-
     const ROW_HPAD = 10;
     const GAP_BETWEEN = 10;
     const screenW = Dimensions.get("window").width;
-
     const HALF_W = Math.floor(screenW * 0.45) - (ROW_HPAD + GAP_BETWEEN);
     const BUBBLE_MAX_W = Math.max(160, HALF_W);
 
@@ -1063,7 +1011,6 @@ export default function ChatScreen({ navigation }) {
         shadowRadius: 8,
         shadowOffset: { width: 0, height: 3 },
         elevation: 2,
-
         marginTop: cornerShift,
         maxWidth: BUBBLE_MAX_W,
         flexShrink: 1,
@@ -1072,7 +1019,6 @@ export default function ChatScreen({ navigation }) {
 
     return (
       <View style={[styles.msgRow, isUser ? styles.rowR : styles.rowL]}>
-        {/* Avatar */}
         <View
           style={{
             width: AVATAR_SIZE,
@@ -1091,7 +1037,6 @@ export default function ChatScreen({ navigation }) {
           />
         </View>
 
-        {/* Bubble + เวลา */}
         <View>
           <View style={bubbleStyle}>
             {isPending ? (
@@ -1146,7 +1091,6 @@ export default function ChatScreen({ navigation }) {
             )}
           </View>
 
-          {/* เวลา แยกบรรทัด ไม่ไปรบกวนการจัดกึ่งกลาง */}
           <Text
             style={[
               styles.timeText,
@@ -1167,10 +1111,10 @@ export default function ChatScreen({ navigation }) {
     );
   };
 
-  const listBottomPad =
-    10 + inputHeight + 12 + (insets.bottom || 0) + kbBtmNum + EXTRA_BOTTOM_GAP;
+  // กันชนด้านล่างของ FlatList (input ไม่ทับแล้ว จึงใช้ padding ต่ำๆ)
+  const listContentPadBottom = 16;
 
-  /* =================== UI =================== */
+  // UI หลัก
   return (
     <SafeAreaView
       style={[
@@ -1335,7 +1279,6 @@ export default function ChatScreen({ navigation }) {
             <TouchableOpacity onPress={toggleSidebar}>
               <Icon name="menu" size={24} color={C.headerText} />
             </TouchableOpacity>
-
             <Image
               source={buddhadhamBG}
               style={{
@@ -1418,10 +1361,19 @@ export default function ChatScreen({ navigation }) {
         </View>
       </View>
 
-      {/* Body + Watermark */}
-      <Animated.View style={{ flex: 1 }}>
+      {/* Body + Input (ไม่ทับกันเพราะ input ไม่ absolute) */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+      >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={[styles.background, { backgroundColor: C.containerBg }]}>
+          <View
+            style={[
+              styles.background,
+              { backgroundColor: C.containerBg, flex: 1 },
+            ]}
+          >
             <Image
               source={buddhadhamBG}
               style={{
@@ -1455,30 +1407,25 @@ export default function ChatScreen({ navigation }) {
                 data={messages}
                 renderItem={renderItem}
                 keyExtractor={(item) => item.id.toString()}
+                style={{ flex: 1 }}
                 contentContainerStyle={{
                   paddingTop: 12,
-                  paddingBottom: listBottomPad,
+                  paddingBottom: listContentPadBottom,
                 }}
                 ListFooterComponent={
                   <View style={{ height: EXTRA_BOTTOM_GAP }} />
                 }
                 keyboardShouldPersistTaps="handled"
-                onContentSizeChange={() =>
-                  listRef.current?.scrollToEnd({ animated: false })
-                }
+                onLayout={() => scrollToBottom(false)}
+                onContentSizeChange={() => scrollToBottom(false)}
               />
             )}
 
-            {/* Input */}
-            <Animated.View
+            {/* Input Bar (ไม่ absolute) */}
+            <View
               style={[
-                styles.inputContainerAbs,
-                {
-                  bottom: kbBottom,
-                  paddingBottom: 12 + (insets.bottom || 0),
-                  backgroundColor: C.inputBarBg,
-                  borderTopColor: C.border,
-                },
+                styles.inputContainerFixed,
+                { backgroundColor: C.inputBarBg, borderTopColor: C.border },
               ]}
             >
               {Platform.OS === "web" ? (
@@ -1560,7 +1507,6 @@ export default function ChatScreen({ navigation }) {
                 />
               )}
 
-              {/*  พิมพ์ด้วยเสียง */}
               <TouchableOpacity
                 onPress={recording ? stopVoice : startVoice}
                 activeOpacity={0.85}
@@ -1584,7 +1530,6 @@ export default function ChatScreen({ navigation }) {
                 />
               </TouchableOpacity>
 
-              {/* Send / Cancel */}
               {sending ? (
                 <TouchableOpacity
                   onPress={showStop ? cancelSending : undefined}
@@ -1625,10 +1570,10 @@ export default function ChatScreen({ navigation }) {
                   <Icon name="send" size={20} color="#fff" />
                 </TouchableOpacity>
               )}
-            </Animated.View>
+            </View>
           </View>
         </TouchableWithoutFeedback>
-      </Animated.View>
+      </KeyboardAvoidingView>
 
       {/* Popup Menu */}
       <Modal
@@ -1675,7 +1620,7 @@ export default function ChatScreen({ navigation }) {
   );
 }
 
-/* ============================== Styles ============================== */
+// ============================== Styles ==============================
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
@@ -1722,10 +1667,7 @@ const styles = StyleSheet.create({
 
   background: { flex: 1 },
 
-  messageWrapper: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-  },
+  messageWrapper: { paddingVertical: 10, paddingHorizontal: 12 },
   timeText: { fontSize: 10 },
 
   input: {
@@ -1737,14 +1679,13 @@ const styles = StyleSheet.create({
     minHeight: MIN_H,
   },
 
-  inputContainerAbs: {
-    position: "absolute",
-    left: 0,
-    right: 0,
+  // แถบพิมพ์แบบติดล่าง (ไม่ absolute)
+  inputContainerFixed: {
     flexDirection: "row",
     alignItems: "flex-end",
     paddingHorizontal: 20,
     paddingTop: 12,
+    paddingBottom: 12,
     borderTopWidth: 1,
   },
 
@@ -1786,7 +1727,6 @@ const styles = StyleSheet.create({
   },
   sidebarItemText: { paddingRight: 8 },
   dotButton: { paddingHorizontal: 4, paddingVertical: 4 },
-
   sidebarButton: {
     padding: 10,
     borderRadius: 8,
@@ -1855,6 +1795,7 @@ const styles = StyleSheet.create({
   },
   renameInlineBtns: { flexDirection: "row", alignItems: "center" },
   inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+
   msgRow: {
     flexDirection: "row",
     alignItems: "flex-start",
