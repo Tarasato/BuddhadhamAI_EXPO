@@ -48,6 +48,9 @@ import {
   editChat as apiEditChat,
   getChatQna,
   getUserChats,
+  checkStatus,
+  saveAnswer,
+
 } from "../src/api/chat";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -70,26 +73,29 @@ const THEME_KEY = "ui_theme_dark";
 
 const wrapSingle = (s) => String(s).replace(/'/g, "\\'");
 
+
+
+
 const storage = {
   async getItem(key) {
     try {
       if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key);
-    } catch {}
+    } catch { }
     if (Platform.OS === "web") {
       try {
         return window.localStorage.getItem(key);
-      } catch {}
+      } catch { }
     }
     return null;
   },
   async setItem(key, val) {
     try {
       if (AsyncStorage?.setItem) return await AsyncStorage.setItem(key, val);
-    } catch {}
+    } catch { }
     if (Platform.OS === "web") {
       try {
         window.localStorage.setItem(key, val);
-      } catch {}
+      } catch { }
     }
   },
 };
@@ -136,56 +142,67 @@ export default function ChatScreen({ navigation }) {
     () =>
       isDark
         ? {
-            containerBg: "#4A5368",
-            headerBg: "#2F3644",
-            headerText: "#F8FAFC",
-            chipBg: "rgba(255,255,255,0.08)",
-            chipText: "#E5E7EB",
-            sidebarBg: "#D7D9DE",
-            sidebarText: "#222222",
-            divider: "#B9BDC6",
-            bubbleUserBg: "#FFFFFF",
-            bubbleUserText: "#0F172A",
-            bubbleBotBg: "#2E3140",
-            bubbleBotText: "#FFFFFF",
-            timeText: "#D1D5DB",
-            inputBg: "#FFFFFF",
-            inputBarBg: "#2F3644",
-            border: "#404656",
-            sendBtn: "#60A5FA",
-            cancelBtn: "#F05252",
-            overlay: "rgba(0,0,0,0.35)",
-            avatarRing: "#111827",
-            logoTint: "#FFFFFF",
-            dateChip: "rgba(255,255,255,0.18)",
-          }
+          containerBg: "#4A5368",
+          headerBg: "#2F3644",
+          headerText: "#F8FAFC",
+          chipBg: "rgba(255,255,255,0.08)",
+          chipText: "#E5E7EB",
+          sidebarBg: "#D7D9DE",
+          sidebarText: "#222222",
+          divider: "#B9BDC6",
+          bubbleUserBg: "#FFFFFF",
+          bubbleUserText: "#0F172A",
+          bubbleBotBg: "#2E3140",
+          bubbleBotText: "#FFFFFF",
+          timeText: "#D1D5DB",
+          inputBg: "#FFFFFF",
+          inputBarBg: "#2F3644",
+          border: "#404656",
+          sendBtn: "#60A5FA",
+          cancelBtn: "#F05252",
+          overlay: "rgba(0,0,0,0.35)",
+          avatarRing: "#111827",
+          logoTint: "#FFFFFF",
+          dateChip: "rgba(255,255,255,0.18)",
+        }
         : {
-            containerBg: "#EEF2F7",
-            headerBg: "#FFFFFF",
-            headerText: "#0F172A",
-            chipBg: "#E8EDF6",
-            chipText: "#0F172A",
-            sidebarBg: "#F1F3F6",
-            sidebarText: "#1F2937",
-            divider: "#D7DDEA",
-            bubbleUserBg: "#FFFFFF",
-            bubbleUserText: "#0F172A",
-            bubbleBotBg: "#E9EDF6",
-            bubbleBotText: "#0F172A",
-            timeText: "#6B7280",
-            inputBg: "#FFFFFF",
-            inputBarBg: "#FFFFFF",
-            border: "#D4D9E5",
-            sendBtn: "#2563EB",
-            cancelBtn: "#DC2626",
-            overlay: "rgba(0,0,0,0.18)",
-            avatarRing: "#93C5FD",
-            logoTint: "#000000",
-            dateChip: "rgba(15,23,42,0.06)",
-          },
+          containerBg: "#EEF2F7",
+          headerBg: "#FFFFFF",
+          headerText: "#0F172A",
+          chipBg: "#E8EDF6",
+          chipText: "#0F172A",
+          sidebarBg: "#F1F3F6",
+          sidebarText: "#1F2937",
+          divider: "#D7DDEA",
+          bubbleUserBg: "#FFFFFF",
+          bubbleUserText: "#0F172A",
+          bubbleBotBg: "#E9EDF6",
+          bubbleBotText: "#0F172A",
+          timeText: "#6B7280",
+          inputBg: "#FFFFFF",
+          inputBarBg: "#FFFFFF",
+          border: "#D4D9E5",
+          sendBtn: "#2563EB",
+          cancelBtn: "#DC2626",
+          overlay: "rgba(0,0,0,0.18)",
+          avatarRing: "#93C5FD",
+          logoTint: "#000000",
+          dateChip: "rgba(15,23,42,0.06)",
+        },
     [isDark]
   );
 
+  // Helpers: pending state reset
+  const firingRef = useRef(false);
+  const triggerSend = async () => {
+    if (firingRef.current || sending) return; // กันซ้ำ
+    firingRef.current = true;
+    try {
+      await sendMessage();
+    } finally {
+      firingRef.current = false;
+    }
+  };
   // Async State
   const [sending, setSending] = useState(false);
   const awaitingRef = useRef(false);
@@ -428,6 +445,134 @@ export default function ChatScreen({ navigation }) {
     return () => unsubscribe?.();
   }, [subscribeTask, currentTaskId]);
 
+  // ============================== Pending Poll helpers ==============================
+  const pollTimerRef = useRef(null);
+  const heartbeatRef = useRef(null);
+  const unmountedRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      unmountedRef.current = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    };
+  }, []);
+
+  const stopPendingPoll = () => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+  };
+
+  const startHeartbeat = (chatId) => {
+    // อัปเดต savedAt เป็นระยะๆ กัน TTL เคลียร์สถานะ (ทุก 10s)
+    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    heartbeatRef.current = setInterval(async () => {
+      if (!chatId) return;
+      const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
+      const s = raw ? JSON.parse(raw) : {};
+      await storage.setItem(
+        STORAGE_PREFIX + String(chatId),
+        JSON.stringify({ ...s, savedAt: Date.now() })
+      );
+    }, 10_000);
+  };
+
+  const startPendingPoll = ({
+    chatId,
+    taskId,
+    pendingQnaId,
+    pendingUserMsgId,
+    pendingUserMsg,
+    initialDelay = 1200,
+  }) => {
+    stopPendingPoll();         // กันซ้อน
+    startHeartbeat(chatId);    // ต่ออายุ savedAt ไปเรื่อยๆ
+
+    const poll = async (delay) => {
+      if (unmountedRef.current) return;
+      pollTimerRef.current = setTimeout(async () => {
+        try {
+          const st = await checkStatus(taskId);
+          const state =
+            st?.state || st?.responseData?.state || st?.data?.state || null;
+
+          if (state === "running" || state === "queued") {
+            // ต่อคิว → โปะ pending ต่อ แล้ววน poll ถี่ขึ้นนิดหน่อย (max 3s, min 1s)
+            const nextDelay = Math.min(3000, Math.max(1000, Math.floor(delay * 1.2)));
+
+            // เก็บ state กลับ storage ให้มี currentTaskId เสมอ
+            await storage.setItem(
+              STORAGE_PREFIX + String(chatId),
+              JSON.stringify({
+                sending: true,
+                currentTaskId: taskId,
+                pendingQnaId,
+                pendingUserMsgId,
+                pendingUserMsg,
+                pendingUserMsgTs: Date.now(),
+                savedAt: Date.now(),
+              })
+            );
+
+            // ถ้า pending-generic ยังไม่อัปเกรด ให้ผูกกับ taskId
+            upgradePendingBubble(taskId);
+
+            poll(nextDelay);
+            return;
+          }
+
+          if (state === "failed" || state === "error") {
+            const errText = "เกิดข้อผิดพลาดในการประมวลผลจากเซิร์ฟเวอร์";
+            try {
+              await saveAnswer({ taskId, chatId, qNaWords: errText });
+            } catch (eSave) {
+              console.warn("saveAnswer failed:", eSave?.message || eSave);
+            }
+            removePendingBotBubble(taskId);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `ans-error-${Date.now()}`,
+                from: "bot",
+                text: errText,
+                time: formatTS(Date.now()),
+              },
+            ]);
+            hardResetPendingState();
+            stopPendingPoll();
+            return;
+          }
+
+          if (state === "done") {
+            // รอ WS มาลงคำตอบ (หรือเซิร์ฟเวอร์เขียน DB แล้ว)
+            await storage.setItem(
+              STORAGE_PREFIX + String(chatId),
+              JSON.stringify({ sending: false, savedAt: Date.now() })
+            );
+            stopPendingPoll();
+            return;
+          }
+
+          // state ไม่รู้จัก → ลองอีกสักพัก
+          poll(Math.min(4000, delay + 500));
+        } catch (e) {
+          console.warn("poll checkStatus error:", e?.message || e);
+          // error ชั่วคราว → ลองใหม่แบบ backoff
+          poll(Math.min(5000, delay * 1.5));
+        }
+      }, delay);
+    };
+
+    poll(initialDelay);
+  };
+
+
   // Load chats/history
   const loadUserChats = async () => {
     if (!user?.id && !user?._id) return;
@@ -465,6 +610,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
+
   const loadHistory = async (chatId) => {
     if (!chatId) return;
     setLoadingHistory(true);
@@ -478,86 +624,236 @@ export default function ChatScreen({ navigation }) {
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
 
     try {
+      //ดึงประวัติจาก DB
       const rows = await getChatQna(chatId);
       const sorted = (rows || [])
         .slice()
         .sort(
           (a, b) =>
-            toTS(a?.createdAt || a?.createAt) -
-            toTS(b?.createdAt || b?.createAt)
+            toTS(a && (a.createdAt || a.createAt)) -
+            toTS(b && (b.createdAt || b.createAt))
         );
+
       const historyMsgs = sorted.map((r, idx) => {
-        const tsNum = toTS(r?.createdAt || r?.createAt || Date.now());
+        const tsNum = toTS((r && (r.createdAt || r.createAt)) || Date.now());
         return {
-          id: String(r.qNaId || idx),
-          from: r.qNaType === "Q" ? "user" : "bot",
-          text: r.qNaWords,
+          id: String((r && r.qNaId) || idx),
+          from: r && r.qNaType === "Q" ? "user" : "bot",
+          text: r && r.qNaWords,
           time: formatTS(tsNum),
           tsNum,
         };
       });
 
-      let nextMsgs = [...historyMsgs];
+      let nextMsgs = historyMsgs.slice();
 
-      const raw = await storage.getItem(STORAGE_PREFIX + chatId);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (saved?.sending) {
-          const pendingUserTs =
-            toTS(saved?.pendingUserMsg?.time) ||
-            toTS(saved?.pendingUserMsgTs) ||
-            toTS(saved?.savedAt);
+      // กู้ state ที่ค้างจาก storage
+      const rawSaved = await storage.getItem(STORAGE_PREFIX + String(chatId));
+      if (rawSaved) {
+        const saved = JSON.parse(rawSaved || "{}");
+
+        if (saved && saved.sending) {
+          const savedPendingMsg = saved.pendingUserMsg || null;
+          const savedPendingTs =
+            toTS(savedPendingMsg && savedPendingMsg.time) ||
+            toTS(saved.pendingUserMsgTs) ||
+            toTS(saved.savedAt);
+
+          const TEXT_NORM = (s) => (s || "").trim();
+          const WITHIN = (a, b, ms) => Math.abs((a || 0) - (b || 0)) <= ms;
+
+          const hasSameUserQRecorded =
+            !!savedPendingMsg &&
+            historyMsgs.some(
+              (m) =>
+                m.from === "user" &&
+                TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
+            );
+
 
           const hasBotAfterPending = historyMsgs.some(
-            (m) => m.from === "bot" && m.tsNum >= pendingUserTs
+            (m) => m.from === "bot" && (m.tsNum || 0) >= (savedPendingTs || 0)
           );
 
+          // คืนสถานะ UI กำลังส่งเสมอ
+          setSending(true);
+          setShowStop(false);
+          if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+          stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
+
           if (hasBotAfterPending) {
+            // มีบอทตอบแล้ว → ปิดสถานะค้าง
             await storage.setItem(
               STORAGE_PREFIX + String(chatId),
               JSON.stringify({ sending: false, savedAt: Date.now() })
             );
+            setSending(false);
+            setShowStop(false);
+            setCurrentTaskId(null);
+            setPendingQnaId(null);
+            setPendingUserMsgId(null);
           } else {
-            if (
-              saved?.pendingUserMsg &&
-              !nextMsgs.some((m) => m.id === saved.pendingUserMsg.id)
-            ) {
-              const u = saved.pendingUserMsg;
-              nextMsgs.push({
-                ...u,
-                from: "user",
-                tsNum: toTS(u.time) || Date.now(),
-              });
-            }
+            // ยังไม่มีคำตอบ → ลองกู้สถานะงาน
+            const taskId = saved.currentTaskId || null;
+            const qId = saved.pendingQnaId || null;
 
-            const pendId = saved.currentTaskId
-              ? `pending-${saved.currentTaskId}`
-              : "pending-generic";
-            const existPend = nextMsgs.some((m) => m.id === pendId);
-            if (!existPend)
+            // ใส่ generic pending bubble ถ้ายังไม่มี
+            if (!nextMsgs.some((m) => m.pending === true)) {
               nextMsgs.push({
-                id: pendId,
+                id: "pending-generic",
                 from: "bot",
                 pending: true,
                 text: "กำลังประมวลผล...",
                 time: formatTS(Date.now()),
                 tsNum: Date.now(),
               });
+            }
 
-            setSending(true);
-            setCurrentTaskId(saved.currentTaskId ?? null);
-            setPendingQnaId(saved.pendingQnaId ?? null);
-            setPendingUserMsgId(saved.pendingUserMsgId ?? null);
+            if (taskId) {
+              // 🟢 มี taskId → ตั้งค่า UI + เริ่ม poll
+              // คืนข้อความผู้ใช้ที่ค้าง ถ้ายังไม่ซ้ำ  
+              const hasSameUserQInNext =
+                !!savedPendingMsg &&
+                nextMsgs.some(
+                  (m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
+                );
+              if (savedPendingMsg && !hasSameUserQInNext) {
 
-            setShowStop(false);
-            if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
-            stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
+                nextMsgs.push({
+                  id: savedPendingMsg.id,
+                  from: "user",
+                  text: savedPendingMsg.text,
+                  time: savedPendingMsg.time,
+                  tsNum: toTS(savedPendingMsg.time) || Date.now(),
+                });
+              }
+
+              // อัปเกรด bubble เป็นของ task นี้
+              const pendId = "pending-" + String(taskId);
+              if (!nextMsgs.some((m) => m.id === pendId)) {
+                const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
+                if (genIdx >= 0) nextMsgs.splice(genIdx, 1);
+                nextMsgs.push({
+                  id: pendId,
+                  from: "bot",
+                  pending: true,
+                  text: "กำลังประมวลผล...",
+                  time: formatTS(Date.now()),
+                  tsNum: Date.now(),
+                });
+              }
+
+              setCurrentTaskId(taskId);
+              setPendingQnaId(qId || null);
+              setPendingUserMsgId(saved.pendingUserMsgId || null);
+
+              await storage.setItem(
+                STORAGE_PREFIX + String(chatId),
+                JSON.stringify({
+                  sending: true,
+                  currentTaskId: taskId,
+                  pendingQnaId: qId || null,
+                  pendingUserMsgId: saved.pendingUserMsgId || null,
+                  pendingUserMsg: savedPendingMsg || null,
+                  pendingUserMsgTs: savedPendingTs || Date.now(),
+                  savedAt: Date.now(),
+                })
+              );
+
+              // ✅ เริ่ม poll สถานะซ้ำๆ แทนที่จะเช็กครั้งเดียว
+              startPendingPoll({
+                chatId,
+                taskId,
+                pendingQnaId: qId || null,
+                pendingUserMsgId: saved.pendingUserMsgId || null,
+                pendingUserMsg: savedPendingMsg || null,
+              });
+            } else {
+              // ❗ ไม่มี taskId → ยิงคำถามเดิมซ้ำเพื่อเอา task ใหม่ แล้วเข้าโหมด poll เช่นกัน
+              if (savedPendingMsg && !hasBotAfterPending && !hasSameUserQRecorded) {
+                try {
+                  if (!nextMsgs.some((m) => m.id === saved.pendingUserMsgId)) {
+                    nextMsgs.push({
+                      id: savedPendingMsg.id,
+                      from: "user",
+                      text: savedPendingMsg.text,
+                      time: savedPendingMsg.time || formatTS(savedPendingTs || Date.now()),
+                      tsNum: savedPendingTs || Date.now(),
+                    });
+                  }
+
+                  const resp2 = await askQuestion({ chatId, question: savedPendingMsg.text });
+                  const newTaskId =
+                    resp2?.taskId || resp2?.id || resp2?.data?.taskId || resp2?.data?.id || null;
+                  const newQId =
+                    resp2?.qNaId ||
+                    resp2?.data?.qNaId ||
+                    resp2?.data?.savedRecordQuestion?.qNaId ||
+                    resp2?.savedRecordQuestion?.qNaId ||
+                    resp2?.questionRecord?.qNaId ||
+                    null;
+
+                  setCurrentTaskId(newTaskId);
+                  setPendingQnaId(newQId);
+
+                  if (newTaskId) {
+                    const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
+                    if (genIdx >= 0) nextMsgs.splice(genIdx, 1);
+                    nextMsgs.push({
+                      id: `pending-${newTaskId}`,
+                      from: "bot",
+                      pending: true,
+                      text: "กำลังประมวลผล...",
+                      time: formatTS(Date.now()),
+                      tsNum: Date.now(),
+                    });
+                  }
+
+                  await storage.setItem(
+                    STORAGE_PREFIX + String(chatId),
+                    JSON.stringify({
+                      sending: true,
+                      currentTaskId: newTaskId,
+                      pendingQnaId: newQId,
+                      pendingUserMsgId: saved.pendingUserMsgId,
+                      pendingUserMsg: savedPendingMsg,
+                      pendingUserMsgTs: savedPendingTs,
+                      savedAt: Date.now(),
+                    })
+                  );
+
+                  // ✅ เข้า poll ต่อเนื่องด้วย task ใหม่
+                  if (newTaskId) {
+                    startPendingPoll({
+                      chatId,
+                      taskId: newTaskId,
+                      pendingQnaId: newQId || null,
+                      pendingUserMsgId: saved.pendingUserMsgId || null,
+                      pendingUserMsg: savedPendingMsg || null,
+                    });
+                  }
+                } catch (eReask) {
+                  console.warn("Re-ask failed:", eReask?.message || eReask);
+                  // ปล่อย pending-generic ไว้ ผู้ใช้กดส่งใหม่ได้ หรือรอ reload รอบต่อไป
+                }
+              } else {
+                await storage.setItem(
+                  STORAGE_PREFIX + String(chatId),
+                  JSON.stringify({ sending: false, savedAt: Date.now() })
+                );
+                setSending(false);
+                setShowStop(false);
+                setCurrentTaskId(null);
+                setPendingQnaId(null);
+                setPendingUserMsgId(null);
+              }
+            }
+
           }
         }
       }
 
       nextMsgs.sort((a, b) => (a.tsNum || 0) - (b.tsNum || 0));
-
       setMessages(nextMsgs);
       setTimeout(() => scrollToBottom(false), 0);
     } catch (err) {
@@ -570,7 +866,9 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  // Lifecycle & persist
+
+
+
   useEffect(() => {
     if (selectedChatId)
       storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
@@ -646,7 +944,7 @@ export default function ChatScreen({ navigation }) {
 
   useEffect(() => {
     if (Platform.OS !== "web") return;
-    const handleBeforeUnload = () => {};
+    const handleBeforeUnload = () => { };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
@@ -657,7 +955,6 @@ export default function ChatScreen({ navigation }) {
     return () => clearTimeout(t);
   }, [messages.length, sending, currentTaskId]);
 
-  // Actions: delete/rename/logout
   const confirmDelete = () => {
     if (Platform.OS === "web")
       return Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?"));
@@ -759,23 +1056,21 @@ export default function ChatScreen({ navigation }) {
   };
 
   // Send / Cancel
-  const sendMessage = async () => {
-    const raw = inputText.trim();
-    if (!raw) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
-    const text = wrapSingle(raw)
-    // const text = `'${wrapSingle(raw)}'`;
+  const sendMessage = async () => {
+    const raw = (inputText || "").trim();
+    if (!raw) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
 
     let chatIdToUse = null;
     let createdNewRoom = false;
 
     if (user) {
       const res = await ensureActiveChat();
-      chatIdToUse = res?.id || null;
-      createdNewRoom = !!res?.created;
+      chatIdToUse = res && res.id ? String(res.id) : null;
+      createdNewRoom = !!(res && res.created);
       if (!chatIdToUse) {
         const botReply = {
-          id: (Date.now() + 1).toString(),
+          id: String(Date.now() + 1),
           from: "bot",
           text: "ไม่สามารถเตรียมห้องแชตได้ กรุณาลองอีกครั้ง",
           time: formatTS(Date.now()),
@@ -786,81 +1081,78 @@ export default function ChatScreen({ navigation }) {
     }
 
     const now = Date.now();
+    const userMsg = {
+      id: String(now),
+      from: "user",
+      text: raw,
+      time: formatTS(now),
+    };
+
+    // UI: เคลียร์อินพุต 
     setInputText("");
     setInputHeight(MIN_H);
+    setPendingUserMsgId(userMsg.id);
+    setMessages((prev) => [...prev, userMsg]);
+    scrollToBottom(true);
 
     setSending(true);
     setShowStop(false);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
 
-    if (!createdNewRoom) {
-      const userMsg = {
-        id: String(now),
-        from: "user",
-        text,
-        time: formatTS(now),
-      };
-      setPendingUserMsgId(userMsg.id);
-      setMessages((prev) => [...prev, userMsg]);
-      scrollToBottom(true);
-      addPendingBotBubble(null);
+    addPendingBotBubble(null);
+
+    // persist state 
+    if (chatIdToUse) {
+      storage.setItem(
+        STORAGE_PREFIX + String(chatIdToUse),
+        JSON.stringify({
+          sending: true,
+          currentTaskId: null,
+          pendingQnaId: null,
+          pendingUserMsgId: userMsg.id,
+          pendingUserMsg: userMsg,
+          pendingUserMsgTs: now,
+          savedAt: now,
+        })
+      );
+    }
+
+    try {
+      const resp = await askQuestion({
+        chatId: user ? chatIdToUse : undefined,
+        question: raw,
+      });
+
+      const taskId =
+        (resp && (resp.taskId || resp.id)) ||
+        (resp && resp.data && (resp.data.taskId || resp.data.id)) ||
+        null;
+      setCurrentTaskId(taskId);
+
+      const qId =
+        (resp && resp.qNaId) ||
+        (resp && resp.data && resp.data.qNaId) ||
+        (resp &&
+          resp.data &&
+          resp.data.savedRecordQuestion &&
+          resp.data.savedRecordQuestion.qNaId) ||
+        (resp && resp.savedRecordQuestion && resp.savedRecordQuestion.qNaId) ||
+        (resp && resp.questionRecord && resp.questionRecord.qNaId) ||
+        null;
+      setPendingQnaId(qId);
+
+      if (taskId) upgradePendingBubble(taskId);
 
       if (chatIdToUse) {
         storage.setItem(
           STORAGE_PREFIX + String(chatIdToUse),
           JSON.stringify({
             sending: true,
-            currentTaskId: null,
-            pendingQnaId: null,
-            pendingUserMsgId: userMsg.id,
-            pendingUserMsg: userMsg,
-            pendingUserMsgTs: now,
-            savedAt: now,
-          })
-        );
-      }
-    }
-
-    try {
-      const resp = await askQuestion({
-        chatId: user ? chatIdToUse : undefined,
-        question: `'${text}'`,
-      });
-
-      const taskId =
-        resp?.taskId ??
-        resp?.id ??
-        resp?.data?.taskId ??
-        resp?.data?.id ??
-        null;
-      setCurrentTaskId(taskId);
-
-      const qId =
-        resp?.qNaId ??
-        resp?.data?.qNaId ??
-        resp?.data?.savedRecordQuestion?.qNaId ??
-        resp?.savedRecordQuestion?.qNaId ??
-        resp?.questionRecord?.qNaId ??
-        null;
-      setPendingQnaId(qId);
-
-      if (taskId) upgradePendingBubble(taskId);
-
-      if (chatIdToUse && !createdNewRoom) {
-        storage.setItem(
-          STORAGE_PREFIX + String(chatIdToUse),
-          JSON.stringify({
-            sending: true,
             currentTaskId: taskId,
             pendingQnaId: qId,
-            pendingUserMsgId: String(now),
-            pendingUserMsg: {
-              id: String(now),
-              from: "user",
-              text,
-              time: formatTS(now),
-            },
+            pendingUserMsgId: userMsg.id,
+            pendingUserMsg: userMsg,
             pendingUserMsgTs: now,
             savedAt: Date.now(),
           })
@@ -874,8 +1166,9 @@ export default function ChatScreen({ navigation }) {
       }
     } catch (error) {
       console.error("askQuestion error:", error);
+      removePendingBotBubble(null);
       const botReply = {
-        id: (Date.now() + 1).toString(),
+        id: String(Date.now() + 1),
         from: "bot",
         text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์",
         time: formatTS(Date.now()),
@@ -884,6 +1177,8 @@ export default function ChatScreen({ navigation }) {
       hardResetPendingState();
     }
   };
+
+
 
   const cancelSending = async () => {
     try {
@@ -914,6 +1209,8 @@ export default function ChatScreen({ navigation }) {
     setPendingQnaId(null);
     setPendingUserMsgId(null);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+    stopPendingPoll(); // ✅ หยุด poll/heartbeat ด้วย
+
     const chatId = selectedChatIdRef.current;
     if (chatId)
       storage.setItem(
@@ -921,6 +1218,8 @@ export default function ChatScreen({ navigation }) {
         JSON.stringify({ sending: false, savedAt: Date.now() })
       );
   };
+
+
 
   // Speech To Text
   const [recording, setRecording] = useState(false);
@@ -988,7 +1287,7 @@ export default function ChatScreen({ navigation }) {
       };
       try {
         rec.start();
-      } catch {}
+      } catch { }
       return;
     }
     const ok = await ensureAndroidMicPermission();
@@ -1011,13 +1310,13 @@ export default function ChatScreen({ navigation }) {
     if (Platform.OS === "web") {
       try {
         webRecRef.current?.stop?.();
-      } catch {}
+      } catch { }
       setRecording(false);
       return;
     }
     try {
       await Voice.stop();
-    } catch {}
+    } catch { }
     setRecording(false);
   };
 
@@ -1472,9 +1771,10 @@ export default function ChatScreen({ navigation }) {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      if (!sending && inputText.trim()) sendMessage();
+                      if (inputText.trim()) triggerSend();
                     }
                   }}
+
                   disabled={sending}
                   style={{
                     flex: 1,
@@ -1536,8 +1836,9 @@ export default function ChatScreen({ navigation }) {
                     }
                   }}
                   onSubmitEditing={() => {
-                    if (!sending && inputText.trim()) sendMessage();
+                    if (inputText.trim()) triggerSend();
                   }}
+
                   scrollEnabled={inputHeight >= MAX_H}
                 />
               )}
@@ -1589,8 +1890,9 @@ export default function ChatScreen({ navigation }) {
               ) : (
                 <TouchableOpacity
                   onPress={() => {
-                    if (!sending && inputText.trim()) sendMessage();
+                    if (inputText.trim()) triggerSend();
                   }}
+
                   disabled={sending || !inputText.trim()}
                   activeOpacity={0.85}
                   style={[

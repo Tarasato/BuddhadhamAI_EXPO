@@ -23,11 +23,10 @@ const TEMP_ERROR_SNIPPETS = [
 /* ========================================================
  * 🔸 QnA: Ask Question
  * ====================================================== */
-export const askQuestion = async ({ chatId, question, k, d }) => {
+export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) => {
   const q = (question ?? "").trim();
   const MAX_QUESTION_LEN = 4000;
 
-  // 🛑 ป้องกันส่งคำถามว่าง
   if (!q) {
     return {
       message: "Answered without saving (blank question, client guarded)",
@@ -39,7 +38,6 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
     };
   }
 
-  // 🛑 จำกัดความยาวคำถาม
   if (q.length > MAX_QUESTION_LEN) {
     return {
       message: "Answered without saving (question too long)",
@@ -51,7 +49,6 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
     };
   }
 
-  // ⏳ Cooldown
   const now = Date.now();
   const delta = now - lastFiredAt;
   if (delta < MIN_COOLDOWN_MS) await sleep(MIN_COOLDOWN_MS - delta);
@@ -60,19 +57,16 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
   const payload = {
     question: q,
     ...(chatId != null ? { chatId } : {}),
-    ...(k != null ? { k: clamp(parseInt(k, 10) || 3, 1, 50) } : {}),
-    ...(d != null ? { d: clamp(Number(d) || 0.75, 0, 1) } : {}),
+    ...(k != null ? { k: clamp(parseInt(k, 10) || 3, 1, 50) } : { k: 10 }),
+    ...(d != null ? { d: clamp(Number(d) || 0.75, 0, 1) } : { d: 0.75 }),
+    ...(dbSaveHint ? { dbSaveHint } : {}), // ⬅️ ส่ง hint ให้ backend ถ้าต้องการบันทึกชื่อไฟล์/ข้อความ
   };
 
-  // 🛑 cancel request ก่อนหน้า
   if (inflightController) {
-    try {
-      inflightController.abort();
-    } catch {}
+    try { inflightController.abort(); } catch { }
   }
   inflightController = new AbortController();
 
-  // 🌀 retry logic สำหรับ error ชั่วคราว
   const MAX_RETRIES = 2;
   const BASE_TIMEOUT_MS = 25000;
   const BASE_BACKOFF_MS = 600;
@@ -84,11 +78,7 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
         signal: inflightController.signal,
         timeout: BASE_TIMEOUT_MS,
       });
-
       inflightController = null;
-      console.log("data:", data);
-      console.log("taskId:", data.taskId);
-      console.log("question:", data.question);
       return data;
     } catch (err) {
       const isAbort = err?.name === "AbortError" || err?.message === "canceled";
@@ -111,8 +101,7 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
         TEMP_ERROR_SNIPPETS.some((s) => msg.includes(s));
 
       if (looksTemporary && attempt < MAX_RETRIES) {
-        const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt);
-        attempt += 1;
+        const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt++);
         await sleep(backoff);
         continue;
       }
@@ -133,6 +122,7 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
   }
 };
 
+
 /* ========================================================
  * 🔸 Chat: CRUD / Fetch
  * ====================================================== */
@@ -142,8 +132,8 @@ export const getUserChats = async (userId) => {
   return Array.isArray(data?.data)
     ? data.data
     : Array.isArray(data)
-    ? data
-    : [];
+      ? data
+      : [];
 };
 
 export const createChat = async ({ chatHeader, userId }) => {
@@ -182,8 +172,8 @@ export const getAllChats = async () => {
   return Array.isArray(data?.data)
     ? data.data
     : Array.isArray(data)
-    ? data
-    : [];
+      ? data
+      : [];
 };
 
 /* ========================================================
@@ -196,8 +186,8 @@ export const getChatQna = async (chatId) => {
     return Array.isArray(data?.data)
       ? data.data
       : Array.isArray(data)
-      ? data
-      : [];
+        ? data
+        : [];
   } catch (err) {
     if (err?.response?.status === 404) return [];
     throw err;
@@ -238,4 +228,29 @@ export const deleteQna = async (qNaId) => {
     if (status1 === 404) return { ok: true, deleted: false };
     throw e1;
   }
+};
+
+export const checkStatus = async (taskId) => {
+  if (!taskId) throw new Error("taskId is required");
+  const { data } = await qNaClient.get(`/status/${encodeURIComponent(taskId)}`);
+  return data?.data ?? data;
+};
+
+// ==============================
+// บันทึกคำตอบเออเรอร์/ข้อความผลลัพธ์
+// ==============================
+export const saveAnswer = async ({ taskId, chatId, qNaWords }) => {
+  if (!taskId) throw new Error("taskId is required");
+  if (!chatId) throw new Error("chatId is required");
+  if (!qNaWords) throw new Error("qNaWords is required");
+
+  const payload = {
+    taskId: String(taskId),
+    chatId: Number(chatId),
+    qNaWords: String(qNaWords),
+  };
+
+
+  const { data } = await qNaClient.post(`/answer`, payload);
+  return data?.data ?? data;
 };
