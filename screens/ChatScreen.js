@@ -1,10 +1,4 @@
-import React, {
-  useRef,
-  useState,
-  useEffect,
-  useCallback,
-  useMemo,
-} from "react";
+import React, { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -32,6 +26,8 @@ import Markdown from "react-native-markdown-display";
 import Icon from "react-native-vector-icons/Ionicons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Voice from "@react-native-voice/voice";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
 
 import { useAuth } from "../src/auth/AuthContext";
 import { useWS } from "../src/ws/WSContext";
@@ -50,7 +46,6 @@ import {
   getUserChats,
   checkStatus,
   saveAnswer,
-
 } from "../src/api/chat";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -69,12 +64,67 @@ const STORAGE_PREFIX = "chat_state_v1:";
 const LAST_CHAT_ID_KEY = "last_selected_chat_id";
 const THEME_KEY = "ui_theme_dark";
 
+const MAX_ATTACHMENT_BYTES = 1_000_000; // 1MB
+const SUPPORTED_MIME = [
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+  "application/xml",
+  "text/*",
+];
+
 // ============================== Helpers ==============================
+const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
+const formatTS = (d) =>
+  new Date(d).toLocaleString("th-TH", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+const toTS = (v) => {
+  if (!v) return 0;
+  const n = typeof v === "number" ? v : Date.parse(v);
+  return Number.isFinite(n) ? n : 0;
+};
 
-const wrapSingle = (s) => String(s).replace(/'/g, "\\'");
+// แปลงข้อความจาก DB มา “โชว์เฉพาะ คำถาม + ชื่อไฟล์” (ตัดเนื้อหาไฟล์ออก)
+const toDisplayQuestionOnly = (text) => {
+  if (!text) return "";
+  const s = String(text);
 
+  // รูปแบบใหม่: มี "(ไฟล์แนบ: ชื่อไฟล์)"
+  const newMark = "(ไฟล์แนบ:";
+  const newIdx = s.indexOf(newMark);
+  if (newIdx >= 0) {
+    // เก็บจนถึงวงเล็บปิดของ "(ไฟล์แนบ: ...)"
+    const closeIdx = s.indexOf(")", newIdx);
+    const head = closeIdx >= 0 ? s.slice(0, closeIdx + 1) : s.slice(0, newIdx) + ")";
+    return head.trim();
+  }
 
+  // รูปแบบเก่า: "---\n📎 เนื้อหาไฟล์แนบ (filename):\n<content>"
+  const oldSep = "\n---\n";
+  const oldIdx = s.indexOf(oldSep);
+  if (oldIdx >= 0) {
+    const anchor = "📎 เนื้อหาไฟล์แนบ (";
+    const aIdx = s.indexOf(anchor, oldIdx + oldSep.length);
+    if (aIdx >= 0) {
+      const endParen = s.indexOf(")", aIdx);
+      const questionPart = s.slice(0, oldIdx).trim();
+      const fileLabel = endParen >= 0 ? s.slice(aIdx, endParen + 1) : s.slice(aIdx);
+      const fileShort = fileLabel.replace("เนื้อหาไฟล์แนบ", "ไฟล์แนบ");
+      return (questionPart ? questionPart + "\n\n" : "") + fileShort;
+    }
+    return s.slice(0, oldIdx).trim();
+  }
 
+  return s;
+};
 
 const storage = {
   async getItem(key) {
@@ -98,23 +148,6 @@ const storage = {
       } catch { }
     }
   },
-};
-
-const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
-const formatTS = (d) =>
-  new Date(d).toLocaleString("th-TH", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-const toTS = (v) => {
-  if (!v) return 0;
-  const n = typeof v === "number" ? v : Date.parse(v);
-  return Number.isFinite(n) ? n : 0;
 };
 
 // ============================== Component ==============================
@@ -194,21 +227,80 @@ export default function ChatScreen({ navigation }) {
 
   // Helpers: pending state reset
   const firingRef = useRef(false);
-  const triggerSend = async () => {
-    if (firingRef.current || sending) return; // กันซ้ำ
-    firingRef.current = true;
-    try {
-      await sendMessage();
-    } finally {
-      firingRef.current = false;
-    }
-  };
-  // Async State
   const [sending, setSending] = useState(false);
   const awaitingRef = useRef(false);
   useEffect(() => {
     awaitingRef.current = sending;
   }, [sending]);
+
+  // แนบไฟล์ข้อความ
+  const [attachment, setAttachment] = useState(null); // { name, uri, size, mime, text }
+  const pickAttachment = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        multiple: false,
+        copyToCacheDirectory: true,
+        type: SUPPORTED_MIME,
+      });
+      if (res.canceled) return;
+
+      const f =
+        res.assets?.[0] ??
+        (res.type === "success"
+          ? {
+            name: res.name,
+            size: res.size,
+            uri: res.uri,
+            mimeType: res.mimeType,
+          }
+          : null);
+      if (!f) return;
+
+      const { name, size, mimeType, uri } = f;
+      const mime = mimeType || "text/plain";
+      const okType = SUPPORTED_MIME.some((m) =>
+        m.endsWith("/*") ? mime.startsWith(m.replace("/*", "")) : m === mime
+      );
+      if (!okType)
+        return Alert.alert(
+          "ไม่รองรับไฟล์",
+          "แนบได้เฉพาะไฟล์ข้อความ (.txt, .md, .csv, .json, .xml)"
+        );
+      if (size && size > MAX_ATTACHMENT_BYTES)
+        return Alert.alert("ไฟล์ใหญ่เกินไป", "จำกัด 1MB");
+
+      // อ่านไฟล์
+      let text = "";
+      if (Platform.OS === "web") {
+        text = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = (err) => reject(err);
+          const blobLike = f.file || f.blob || res.file || null;
+          if (blobLike) reader.readAsText(blobLike);
+          else {
+            fetch(uri)
+              .then((r) => r.blob())
+              .then((b) => reader.readAsText(b))
+              .catch(reject);
+          }
+        });
+      } else {
+        text = await FileSystem.readAsStringAsync(uri, {
+          encoding: "utf8",
+        });
+      }
+
+      if (!text || !text.trim())
+        return Alert.alert("ไฟล์ว่าง", "ไม่พบเนื้อหาในไฟล์ที่เลือก");
+
+      setAttachment({ name, uri, size, mime, text });
+    } catch (e) {
+      console.warn("pickAttachment error:", e);
+      Alert.alert("ผิดพลาด", "เลือกไฟล์ไม่สำเร็จ");
+    }
+  };
+  const removeAttachment = () => setAttachment(null);
 
   const [showStop, setShowStop] = useState(false);
   const stopTimerRef = useRef(null);
@@ -228,6 +320,23 @@ export default function ChatScreen({ navigation }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarAnim = useState(new Animated.Value(-260))[0];
   const [inputHeight, setInputHeight] = useState(MIN_H);
+
+  // ⬇️ ความสูงจริงของแถบอินพุต (ใช้ยกชิปไฟล์แนบขึ้น)
+  const [inputBarH, setInputBarH] = useState(0);
+
+  // Calculations needed by styles
+  const screenW = Dimensions.get("window").width;
+  const ROW_HPAD = 10;
+  const GAP_BETWEEN = 10;
+  const HALF_W = Math.floor(screenW * 0.4) - (ROW_HPAD + GAP_BETWEEN);
+  const BUBBLE_MAX_W = Math.max(HALF_W);
+  const cornerShift = AVATAR_SIZE / 2 - CORNER_NEAR_AVATAR;
+
+  // Styles (no inline in JSX)
+  const S = useMemo(
+    () => makeStyles(C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift),
+    [C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift]
+  );
 
   // List/Scroll
   const listRef = useRef(null);
@@ -276,18 +385,15 @@ export default function ChatScreen({ navigation }) {
   // Ensure active chat
   const ensureActiveChat = async () => {
     if (!user) return { id: null, created: false };
-
     const currentId = selectedChatIdRef.current;
     if (currentId && chats.some((c) => String(c.id) === String(currentId))) {
       return { id: currentId, created: false };
     }
-
     if (chats.length > 0) {
       const id = String(chats[0].id);
       setSelectedChatId(id);
       return { id, created: false };
     }
-
     try {
       const created = await createChat({
         userId: user?.id || user?._id,
@@ -343,9 +449,7 @@ export default function ChatScreen({ navigation }) {
   const addPendingBotBubble = (taskId) => {
     const id = taskId ? pendingBubbleId(taskId) : "pending-generic";
     setMessages((prev) =>
-      prev.some((m) => m.id === id)
-        ? prev
-        : [...prev, makePendingBubble(taskId)]
+      prev.some((m) => m.id === id) ? prev : [...prev, makePendingBubble(taskId)]
     );
   };
   const removePendingBotBubble = (taskId) => {
@@ -470,7 +574,6 @@ export default function ChatScreen({ navigation }) {
   };
 
   const startHeartbeat = (chatId) => {
-    // อัปเดต savedAt เป็นระยะๆ กัน TTL เคลียร์สถานะ (ทุก 10s)
     if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     heartbeatRef.current = setInterval(async () => {
       if (!chatId) return;
@@ -491,8 +594,8 @@ export default function ChatScreen({ navigation }) {
     pendingUserMsg,
     initialDelay = 1200,
   }) => {
-    stopPendingPoll();         // กันซ้อน
-    startHeartbeat(chatId);    // ต่ออายุ savedAt ไปเรื่อยๆ
+    stopPendingPoll();
+    startHeartbeat(chatId);
 
     const poll = async (delay) => {
       if (unmountedRef.current) return;
@@ -503,10 +606,11 @@ export default function ChatScreen({ navigation }) {
             st?.state || st?.responseData?.state || st?.data?.state || null;
 
           if (state === "running" || state === "queued") {
-            // ต่อคิว → โปะ pending ต่อ แล้ววน poll ถี่ขึ้นนิดหน่อย (max 3s, min 1s)
-            const nextDelay = Math.min(3000, Math.max(1000, Math.floor(delay * 1.2)));
+            const nextDelay = Math.min(
+              3000,
+              Math.max(1000, Math.floor(delay * 1.2))
+            );
 
-            // เก็บ state กลับ storage ให้มี currentTaskId เสมอ
             await storage.setItem(
               STORAGE_PREFIX + String(chatId),
               JSON.stringify({
@@ -520,9 +624,7 @@ export default function ChatScreen({ navigation }) {
               })
             );
 
-            // ถ้า pending-generic ยังไม่อัปเกรด ให้ผูกกับ taskId
             upgradePendingBubble(taskId);
-
             poll(nextDelay);
             return;
           }
@@ -550,7 +652,6 @@ export default function ChatScreen({ navigation }) {
           }
 
           if (state === "done") {
-            // รอ WS มาลงคำตอบ (หรือเซิร์ฟเวอร์เขียน DB แล้ว)
             await storage.setItem(
               STORAGE_PREFIX + String(chatId),
               JSON.stringify({ sending: false, savedAt: Date.now() })
@@ -559,11 +660,9 @@ export default function ChatScreen({ navigation }) {
             return;
           }
 
-          // state ไม่รู้จัก → ลองอีกสักพัก
           poll(Math.min(4000, delay + 500));
         } catch (e) {
           console.warn("poll checkStatus error:", e?.message || e);
-          // error ชั่วคราว → ลองใหม่แบบ backoff
           poll(Math.min(5000, delay * 1.5));
         }
       }, delay);
@@ -571,7 +670,6 @@ export default function ChatScreen({ navigation }) {
 
     poll(initialDelay);
   };
-
 
   // Load chats/history
   const loadUserChats = async () => {
@@ -610,7 +708,6 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-
   const loadHistory = async (chatId) => {
     if (!chatId) return;
     setLoadingHistory(true);
@@ -624,7 +721,6 @@ export default function ChatScreen({ navigation }) {
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
 
     try {
-      //ดึงประวัติจาก DB
       const rows = await getChatQna(chatId);
       const sorted = (rows || [])
         .slice()
@@ -639,7 +735,8 @@ export default function ChatScreen({ navigation }) {
         return {
           id: String((r && r.qNaId) || idx),
           from: r && r.qNaType === "Q" ? "user" : "bot",
-          text: r && r.qNaWords,
+          // แสดงเฉพาะคำถาม + ชื่อไฟล์ (ถ้ามี)
+          text: toDisplayQuestionOnly(r && r.qNaWords),
           time: formatTS(tsNum),
           tsNum,
         };
@@ -647,7 +744,6 @@ export default function ChatScreen({ navigation }) {
 
       let nextMsgs = historyMsgs.slice();
 
-      // กู้ state ที่ค้างจาก storage
       const rawSaved = await storage.getItem(STORAGE_PREFIX + String(chatId));
       if (rawSaved) {
         const saved = JSON.parse(rawSaved || "{}");
@@ -660,7 +756,6 @@ export default function ChatScreen({ navigation }) {
             toTS(saved.savedAt);
 
           const TEXT_NORM = (s) => (s || "").trim();
-          const WITHIN = (a, b, ms) => Math.abs((a || 0) - (b || 0)) <= ms;
 
           const hasSameUserQRecorded =
             !!savedPendingMsg &&
@@ -670,19 +765,16 @@ export default function ChatScreen({ navigation }) {
                 TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
             );
 
-
           const hasBotAfterPending = historyMsgs.some(
             (m) => m.from === "bot" && (m.tsNum || 0) >= (savedPendingTs || 0)
           );
 
-          // คืนสถานะ UI กำลังส่งเสมอ
           setSending(true);
           setShowStop(false);
           if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
           stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
 
           if (hasBotAfterPending) {
-            // มีบอทตอบแล้ว → ปิดสถานะค้าง
             await storage.setItem(
               STORAGE_PREFIX + String(chatId),
               JSON.stringify({ sending: false, savedAt: Date.now() })
@@ -693,11 +785,9 @@ export default function ChatScreen({ navigation }) {
             setPendingQnaId(null);
             setPendingUserMsgId(null);
           } else {
-            // ยังไม่มีคำตอบ → ลองกู้สถานะงาน
             const taskId = saved.currentTaskId || null;
             const qId = saved.pendingQnaId || null;
 
-            // ใส่ generic pending bubble ถ้ายังไม่มี
             if (!nextMsgs.some((m) => m.pending === true)) {
               nextMsgs.push({
                 id: "pending-generic",
@@ -710,28 +800,28 @@ export default function ChatScreen({ navigation }) {
             }
 
             if (taskId) {
-              // 🟢 มี taskId → ตั้งค่า UI + เริ่ม poll
-              // คืนข้อความผู้ใช้ที่ค้าง ถ้ายังไม่ซ้ำ  
               const hasSameUserQInNext =
                 !!savedPendingMsg &&
                 nextMsgs.some(
-                  (m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
+                  (m) =>
+                    m.from === "user" &&
+                    TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
                 );
               if (savedPendingMsg && !hasSameUserQInNext) {
-
                 nextMsgs.push({
                   id: savedPendingMsg.id,
                   from: "user",
-                  text: savedPendingMsg.text,
+                  text: toDisplayQuestionOnly(savedPendingMsg.text),
                   time: savedPendingMsg.time,
                   tsNum: toTS(savedPendingMsg.time) || Date.now(),
                 });
               }
 
-              // อัปเกรด bubble เป็นของ task นี้
               const pendId = "pending-" + String(taskId);
               if (!nextMsgs.some((m) => m.id === pendId)) {
-                const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
+                const genIdx = nextMsgs.findIndex(
+                  (m) => m.id === "pending-generic"
+                );
                 if (genIdx >= 0) nextMsgs.splice(genIdx, 1);
                 nextMsgs.push({
                   id: pendId,
@@ -760,7 +850,6 @@ export default function ChatScreen({ navigation }) {
                 })
               );
 
-              // ✅ เริ่ม poll สถานะซ้ำๆ แทนที่จะเช็กครั้งเดียว
               startPendingPoll({
                 chatId,
                 taskId,
@@ -769,22 +858,31 @@ export default function ChatScreen({ navigation }) {
                 pendingUserMsg: savedPendingMsg || null,
               });
             } else {
-              // ❗ ไม่มี taskId → ยิงคำถามเดิมซ้ำเพื่อเอา task ใหม่ แล้วเข้าโหมด poll เช่นกัน
               if (savedPendingMsg && !hasBotAfterPending && !hasSameUserQRecorded) {
                 try {
                   if (!nextMsgs.some((m) => m.id === saved.pendingUserMsgId)) {
                     nextMsgs.push({
                       id: savedPendingMsg.id,
                       from: "user",
-                      text: savedPendingMsg.text,
-                      time: savedPendingMsg.time || formatTS(savedPendingTs || Date.now()),
+                      text: toDisplayQuestionOnly(savedPendingMsg.text),
+                      time:
+                        savedPendingMsg.time ||
+                        formatTS(savedPendingTs || Date.now()),
                       tsNum: savedPendingTs || Date.now(),
                     });
                   }
 
-                  const resp2 = await askQuestion({ chatId, question: savedPendingMsg.text });
+                  const resp2 = await askQuestion({
+                    chatId,
+                    question: toDisplayQuestionOnly(savedPendingMsg.text),
+                    // ไม่ส่ง dbSaveHint ซ้ำใน flow กู้คืน
+                  });
                   const newTaskId =
-                    resp2?.taskId || resp2?.id || resp2?.data?.taskId || resp2?.data?.id || null;
+                    resp2?.taskId ||
+                    resp2?.id ||
+                    resp2?.data?.taskId ||
+                    resp2?.data?.id ||
+                    null;
                   const newQId =
                     resp2?.qNaId ||
                     resp2?.data?.qNaId ||
@@ -796,9 +894,11 @@ export default function ChatScreen({ navigation }) {
                   setCurrentTaskId(newTaskId);
                   setPendingQnaId(newQId);
 
+                  const genIdx = nextMsgs.findIndex(
+                    (m) => m.id === "pending-generic"
+                  );
+                  if (newTaskId && genIdx >= 0) nextMsgs.splice(genIdx, 1);
                   if (newTaskId) {
-                    const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
-                    if (genIdx >= 0) nextMsgs.splice(genIdx, 1);
                     nextMsgs.push({
                       id: `pending-${newTaskId}`,
                       from: "bot",
@@ -822,7 +922,6 @@ export default function ChatScreen({ navigation }) {
                     })
                   );
 
-                  // ✅ เข้า poll ต่อเนื่องด้วย task ใหม่
                   if (newTaskId) {
                     startPendingPoll({
                       chatId,
@@ -834,7 +933,6 @@ export default function ChatScreen({ navigation }) {
                   }
                 } catch (eReask) {
                   console.warn("Re-ask failed:", eReask?.message || eReask);
-                  // ปล่อย pending-generic ไว้ ผู้ใช้กดส่งใหม่ได้ หรือรอ reload รอบต่อไป
                 }
               } else {
                 await storage.setItem(
@@ -848,7 +946,6 @@ export default function ChatScreen({ navigation }) {
                 setPendingUserMsgId(null);
               }
             }
-
           }
         }
       }
@@ -866,9 +963,6 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-
-
-
   useEffect(() => {
     if (selectedChatId)
       storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
@@ -878,6 +972,7 @@ export default function ChatScreen({ navigation }) {
     if (!user) {
       setChats([]);
       setSelectedChatId(null);
+      setMessages([]);
       return;
     }
     loadUserChats();
@@ -955,6 +1050,31 @@ export default function ChatScreen({ navigation }) {
     return () => clearTimeout(t);
   }, [messages.length, sending, currentTaskId]);
 
+  const addNewChat = async () => {
+    if (!user) {
+      Alert.alert(
+        "โหมดไม่บันทึก",
+        "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ"
+      );
+      return;
+    }
+    try {
+      const created = await createChat({
+        userId: user?.id || user?._id,
+        chatHeader: "แชตใหม่",
+      });
+      const newChatId = String(created?.chatId ?? created?.id);
+      const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
+      setChats((prev) => [item, ...prev]);
+      setSelectedChatId(newChatId);
+      setMessages([]);
+      setTimeout(() => scrollToBottom(false), 0);
+    } catch (err) {
+      console.error("createChat error:", err);
+      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+    }
+  };
+
   const confirmDelete = () => {
     if (Platform.OS === "web")
       return Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?"));
@@ -1030,52 +1150,66 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  const addNewChat = async () => {
-    if (!user) {
-      Alert.alert(
-        "โหมดไม่บันทึก",
-        "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ"
-      );
-      return;
-    }
+  const triggerSend = async () => {
+    if (firingRef.current || sending) return;
+    firingRef.current = true;
     try {
-      const created = await createChat({
-        userId: user?.id || user?._id,
-        chatHeader: "แชตใหม่",
-      });
-      const newChatId = String(created?.chatId ?? created?.id);
-      const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
-      setChats((prev) => [item, ...prev]);
-      setSelectedChatId(newChatId);
-      setMessages([]);
-      setTimeout(() => scrollToBottom(false), 0);
-    } catch (err) {
-      console.error("createChat error:", err);
-      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+      await sendMessage();
+    } finally {
+      firingRef.current = false;
     }
   };
 
-  // Send / Cancel
-
+  // ---------------------- ส่งข้อความ / แนบไฟล์ ----------------------
   const sendMessage = async () => {
-    const raw = (inputText || "").trim();
-    if (!raw) return Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
+    const rawText = (inputText || "").trim();
+    const attachText = (attachment?.text || "").trim();
+    const hasText = rawText.length > 0;
+    const hasAttach = attachText.length > 0;
+
+    if (!hasText && !hasAttach) {
+      Alert.alert("แจ้งเตือน", "กรุณาพิมพ์ข้อความหรือแนบไฟล์ก่อนส่ง");
+      return;
+    }
+
+    // ข้อความที่ใช้ "แสดงบนจอ" (ไม่มีเนื้อหาไฟล์ยาว)
+    const uiMessage =
+      hasText && hasAttach
+        ? `${rawText}\n\n(ไฟล์แนบ: ${attachment.name})`
+        : hasText
+          ? rawText
+          : `(ไฟล์แนบ: ${attachment.name})`;
+
+    // const apiQuestion = hasAttach ? attachText : rawText;
+    const fullQuestion = hasAttach
+      ? (hasText
+        ? `${rawText}\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachment.name}):\n${attachText}`
+        : `(ไฟล์แนบ: ${attachment.name})\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachment.name}):\n${attachText}`)
+      : rawText;
+
+
+    // สำหรับฝั่งบันทึก DB: แนบเนื้อหาไฟล์จริงใน dbSaveHint
+    const dbSaveHint = hasAttach
+      ? { fileName: attachment.name, fileText: attachText }
+      : undefined;
 
     let chatIdToUse = null;
     let createdNewRoom = false;
 
     if (user) {
       const res = await ensureActiveChat();
-      chatIdToUse = res && res.id ? String(res.id) : null;
-      createdNewRoom = !!(res && res.created);
+      chatIdToUse = res?.id ? String(res.id) : null;
+      createdNewRoom = !!res?.created;
       if (!chatIdToUse) {
-        const botReply = {
-          id: String(Date.now() + 1),
-          from: "bot",
-          text: "ไม่สามารถเตรียมห้องแชตได้ กรุณาลองอีกครั้ง",
-          time: formatTS(Date.now()),
-        };
-        setMessages((prev) => [...prev, botReply]);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: String(Date.now() + 1),
+            from: "bot",
+            text: "ไม่สามารถเตรียมห้องแชตได้ กรุณาลองอีกครั้ง",
+            time: formatTS(Date.now()),
+          },
+        ]);
         return;
       }
     }
@@ -1084,13 +1218,14 @@ export default function ChatScreen({ navigation }) {
     const userMsg = {
       id: String(now),
       from: "user",
-      text: raw,
+      text: uiMessage,
       time: formatTS(now),
     };
 
-    // UI: เคลียร์อินพุต 
+    // แสดงก่อน + เคลียร์ช่อง/ไฟล์แนบ
     setInputText("");
     setInputHeight(MIN_H);
+    setAttachment(null); // เคลียร์ไฟล์แนบหลังส่ง
     setPendingUserMsgId(userMsg.id);
     setMessages((prev) => [...prev, userMsg]);
     scrollToBottom(true);
@@ -1102,7 +1237,6 @@ export default function ChatScreen({ navigation }) {
 
     addPendingBotBubble(null);
 
-    // persist state 
     if (chatIdToUse) {
       storage.setItem(
         STORAGE_PREFIX + String(chatIdToUse),
@@ -1121,24 +1255,20 @@ export default function ChatScreen({ navigation }) {
     try {
       const resp = await askQuestion({
         chatId: user ? chatIdToUse : undefined,
-        question: raw,
+        question: fullQuestion,
+        dbSaveHint, // << เนื้อหาไฟล์จริงจะไปกับค่านี้
       });
 
       const taskId =
-        (resp && (resp.taskId || resp.id)) ||
-        (resp && resp.data && (resp.data.taskId || resp.data.id)) ||
-        null;
+        resp?.taskId || resp?.id || resp?.data?.taskId || resp?.data?.id || null;
       setCurrentTaskId(taskId);
 
       const qId =
-        (resp && resp.qNaId) ||
-        (resp && resp.data && resp.data.qNaId) ||
-        (resp &&
-          resp.data &&
-          resp.data.savedRecordQuestion &&
-          resp.data.savedRecordQuestion.qNaId) ||
-        (resp && resp.savedRecordQuestion && resp.savedRecordQuestion.qNaId) ||
-        (resp && resp.questionRecord && resp.questionRecord.qNaId) ||
+        resp?.qNaId ||
+        resp?.data?.qNaId ||
+        resp?.data?.savedRecordQuestion?.qNaId ||
+        resp?.savedRecordQuestion?.qNaId ||
+        resp?.questionRecord?.qNaId ||
         null;
       setPendingQnaId(qId);
 
@@ -1154,6 +1284,7 @@ export default function ChatScreen({ navigation }) {
             pendingUserMsgId: userMsg.id,
             pendingUserMsg: userMsg,
             pendingUserMsgTs: now,
+            pendingFullQuestion: fullQuestion,
             savedAt: Date.now(),
           })
         );
@@ -1167,18 +1298,18 @@ export default function ChatScreen({ navigation }) {
     } catch (error) {
       console.error("askQuestion error:", error);
       removePendingBotBubble(null);
-      const botReply = {
-        id: String(Date.now() + 1),
-        from: "bot",
-        text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์",
-        time: formatTS(Date.now()),
-      };
-      setMessages((prev) => [...prev, botReply]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: String(Date.now() + 1),
+          from: "bot",
+          text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์",
+          time: formatTS(Date.now()),
+        },
+      ]);
       hardResetPendingState();
     }
   };
-
-
 
   const cancelSending = async () => {
     try {
@@ -1209,8 +1340,7 @@ export default function ChatScreen({ navigation }) {
     setPendingQnaId(null);
     setPendingUserMsgId(null);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
-    stopPendingPoll(); // ✅ หยุด poll/heartbeat ด้วย
-
+    stopPendingPoll();
     const chatId = selectedChatIdRef.current;
     if (chatId)
       storage.setItem(
@@ -1218,8 +1348,6 @@ export default function ChatScreen({ navigation }) {
         JSON.stringify({ sending: false, savedAt: Date.now() })
       );
   };
-
-
 
   // Speech To Text
   const [recording, setRecording] = useState(false);
@@ -1231,7 +1359,6 @@ export default function ChatScreen({ navigation }) {
     const onSpeechEnd = () => setRecording(false);
     const onSpeechError = (e) => {
       setRecording(false);
-      console.warn("STT error:", e?.error);
       Alert.alert("ไมโครโฟน", "ไม่สามารถใช้งานไมโครโฟนได้");
     };
     const onSpeechResults = (e) => {
@@ -1255,7 +1382,6 @@ export default function ChatScreen({ navigation }) {
       );
       return granted === PermissionsAndroid.RESULTS.GRANTED;
     } catch (e) {
-      console.warn("Permission error:", e);
       return false;
     }
   };
@@ -1269,11 +1395,10 @@ export default function ChatScreen({ navigation }) {
   const startVoice = async () => {
     if (Platform.OS === "web") {
       const rec = getWebRecognizer();
-      if (!rec)
-        return Alert.alert(
-          "ไม่รองรับ",
-          "เบราว์เซอร์นี้ไม่รองรับพิมพ์ด้วยเสียง"
-        );
+      if (!rec) {
+        Alert.alert("ไม่รองรับ", "เบราว์เซอร์นี้ไม่รองรับพิมพ์ด้วยเสียง");
+        return;
+      }
       webRecRef.current = rec;
       rec.lang = "th-TH";
       rec.interimResults = false;
@@ -1291,16 +1416,14 @@ export default function ChatScreen({ navigation }) {
       return;
     }
     const ok = await ensureAndroidMicPermission();
-    if (!ok)
-      return Alert.alert(
-        "ต้องการสิทธิ์",
-        "กรุณาอนุญาตไมโครโฟนเพื่อใช้พิมพ์ด้วยเสียง"
-      );
+    if (!ok) {
+      Alert.alert("ต้องการสิทธิ์", "กรุณาอนุญาตไมโครโฟนเพื่อใช้พิมพ์ด้วยเสียง");
+      return;
+    }
     try {
       await Voice.destroy();
       await Voice.start("th-TH");
     } catch (e) {
-      console.warn("Voice.start error:", e);
       Alert.alert("ไมโครโฟน", "เริ่มพิมพ์ด้วยเสียงไม่สำเร็จ");
       setRecording(false);
     }
@@ -1325,100 +1448,29 @@ export default function ChatScreen({ navigation }) {
     const isUser = item.from === "user";
     const isPending = item.pending === true;
 
-    const cornerShift = AVATAR_SIZE / 2 - CORNER_NEAR_AVATAR;
-    const ROW_HPAD = 10;
-    const GAP_BETWEEN = 10;
-    const screenW = Dimensions.get("window").width;
-    const HALF_W = Math.floor(screenW * 0.45) - (ROW_HPAD + GAP_BETWEEN);
-    const BUBBLE_MAX_W = Math.max(160, HALF_W);
-
-    const bubbleStyle = [
-      styles.messageWrapper,
-      {
-        backgroundColor: isUser ? C.bubbleUserBg : C.bubbleBotBg,
-        alignSelf: isUser ? "flex-end" : "flex-start",
-        borderTopLeftRadius: isUser ? 16 : 6,
-        borderTopRightRadius: isUser ? 6 : 16,
-        borderBottomLeftRadius: 16,
-        borderBottomRightRadius: 16,
-        shadowColor: "#000",
-        shadowOpacity: 0.1,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
-        elevation: 2,
-        marginTop: cornerShift,
-        maxWidth: BUBBLE_MAX_W,
-        flexShrink: 1,
-      },
-    ];
-
     return (
-      <View style={[styles.msgRow, isUser ? styles.rowR : styles.rowL]}>
-        <View
-          style={{
-            width: AVATAR_SIZE,
-            height: AVATAR_SIZE,
-            borderRadius: AVATAR_SIZE / 2,
-            overflow: "hidden",
-            borderWidth: 2,
-            borderColor: C.avatarRing,
-            backgroundColor: "#fff",
-          }}
-        >
-          <Image
-            source={isUser ? userAvatar : botAvatar}
-            style={{ width: "100%", height: "100%" }}
-            resizeMode="cover"
-          />
+      <View style={[S.msgRow, isUser ? S.rowR : S.rowL]}>
+        <View style={S.avatarWrap}>
+          <Image source={isUser ? userAvatar : botAvatar} style={S.avatarImg} resizeMode="cover" />
         </View>
 
         <View>
-          <View style={bubbleStyle}>
+          <View style={[S.messageWrapper, isUser ? S.bubbleUser : S.bubbleBot]}>
             {isPending ? (
-              <View
-                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-              >
+              <View style={S.pendingRow}>
                 <ActivityIndicator color={isDark ? "#fff" : "#000"} />
-                <Text
-                  style={{
-                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
-                    fontSize: 16,
-                  }}
-                >
+                <Text style={isUser ? S.bubbleUserText : S.bubbleBotText}>
                   กำลังประมวลผล...
                 </Text>
               </View>
             ) : (
               <Markdown
                 style={{
-                  body: {
-                    fontSize: 16,
-                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
-                    lineHeight: 22,
-                    ...(Platform.OS === "web"
-                      ? { wordBreak: "break-word", overflowWrap: "anywhere" }
-                      : {}),
-                  },
-                  strong: {
-                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
-                  },
-                  em: { color: isUser ? C.bubbleUserText : C.bubbleBotText },
-                  code_block: {
-                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
-                    backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
-                    borderRadius: 8,
-                    padding: 8,
-                  },
-                  blockquote: {
-                    color: isUser ? C.bubbleUserText : C.bubbleBotText,
-                    backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
-                    fontStyle: "italic",
-                    borderLeftWidth: 3,
-                    borderLeftColor: isDark ? "#64748b" : "#c7d2fe",
-                    paddingHorizontal: 10,
-                    paddingVertical: 6,
-                    borderRadius: 8,
-                  },
+                  body: isUser ? S.mdBodyUser : S.mdBodyBot,
+                  strong: isUser ? S.mdStrongUser : S.mdStrongBot,
+                  em: isUser ? S.mdEmUser : S.mdEmBot,
+                  code_block: S.mdCodeBlock,
+                  blockquote: S.mdBlockquote,
                 }}
               >
                 {item.text}
@@ -1428,15 +1480,9 @@ export default function ChatScreen({ navigation }) {
 
           <Text
             style={[
-              styles.timeText,
-              {
-                color: C.timeText,
-                marginHorizontal: 6,
-                marginTop: 4,
-                textAlign: isUser ? "right" : "left",
-                maxWidth: BUBBLE_MAX_W,
-                alignSelf: isUser ? "flex-end" : "flex-start",
-              },
+              S.timeText,
+              isUser ? S.alignRight : S.alignLeft,
+              isUser ? S.timeUser : S.timeBot,
             ]}
           >
             {item.time}
@@ -1446,38 +1492,35 @@ export default function ChatScreen({ navigation }) {
     );
   };
 
-  const listContentPadBottom = 16;
+  const hasText = (inputText || "").trim().length > 0;
+  const hasAttach = !!(attachment && (attachment.text || "").trim().length > 0);
+  const canSend = !sending && (hasText || hasAttach);
+  const listContentPadBottom = 16 + (attachment ? 56 : 0);
 
   // UI
   return (
     <SafeAreaView
       style={[
-        styles.container,
-        { backgroundColor: C.containerBg },
-        Platform.OS !== "web" && { paddingTop: StatusBar.currentHeight || 20 },
+        S.container,
+        S.containerBg,
+        Platform.OS !== "web" ? S.withStatusBarPad : null,
       ]}
     >
       {/* Sidebar */}
       <Animated.View
         style={[
-          styles.sidebar,
-          {
-            left: sidebarAnim,
-            backgroundColor: C.sidebarBg,
-            borderRightColor: C.divider,
-            borderRightWidth: 1,
-          },
+          S.sidebar,
+          { left: sidebarAnim },
+          S.sidebarBg,
+          S.sidebarBorderRight,
         ]}
       >
-        <View style={styles.sidebarHeader}>
-          <Text style={[styles.sidebarTitle, { color: C.sidebarText }]}>
+        <View style={S.sidebarHeader}>
+          <Text style={[S.sidebarTitle, S.sidebarTitleColor]}>
             {user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}
           </Text>
-          <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <TouchableOpacity
-              onPress={toggleSidebar}
-              style={{ paddingLeft: 8 }}
-            >
+          <View style={S.rowCenter}>
+            <TouchableOpacity onPress={toggleSidebar} style={S.padLeft8}>
               <Icon name="close" size={22} color="#333" />
             </TouchableOpacity>
           </View>
@@ -1485,7 +1528,7 @@ export default function ChatScreen({ navigation }) {
 
         {user ? (
           loadingChats ? (
-            <View style={{ paddingVertical: 10 }}>
+            <View style={S.padV10}>
               <ActivityIndicator />
             </View>
           ) : (
@@ -1496,44 +1539,28 @@ export default function ChatScreen({ navigation }) {
                 <View
                   key={chat.id}
                   style={[
-                    styles.sidebarItemRow,
-                    {
-                      borderColor: C.divider,
-                      backgroundColor: isActive
-                        ? isDark
-                          ? "#C9CCD3"
-                          : "#E6E9F0"
-                        : "transparent",
-                      borderRadius: 8,
-                      paddingHorizontal: 8,
-                    },
+                    S.sidebarItemRow,
+                    S.sidebarItemBorder,
+                    isActive ? (isDark ? S.sidebarItemActiveDark : S.sidebarItemActiveLight) : null,
+                    S.sidebarItemRadiusPad,
                   ]}
                 >
                   {isEditing ? (
-                    <View style={styles.renameInlineRow}>
+                    <View style={S.renameInlineRow}>
                       <TextInput
                         value={editingText}
                         onChangeText={setEditingText}
                         placeholder="ชื่อแชต"
-                        style={[
-                          styles.renameInlineInput,
-                          { borderColor: C.divider, backgroundColor: "#fff" },
-                        ]}
+                        style={[S.renameInlineInput, S.renameInlineInputTheme]}
                         autoFocus
                         onSubmitEditing={confirmRenameInline}
                         returnKeyType="done"
                       />
-                      <View style={styles.renameInlineBtns}>
-                        <TouchableOpacity
-                          onPress={confirmRenameInline}
-                          style={styles.inlineIconBtn}
-                        >
+                      <View style={S.renameInlineBtns}>
+                        <TouchableOpacity onPress={confirmRenameInline} style={S.inlineIconBtn}>
                           <Icon name="checkmark" size={18} color="#2ecc71" />
                         </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={cancelRenameInline}
-                          style={styles.inlineIconBtn}
-                        >
+                        <TouchableOpacity onPress={cancelRenameInline} style={S.inlineIconBtn}>
                           <Icon name="close" size={18} color="#e74c3c" />
                         </TouchableOpacity>
                       </View>
@@ -1541,7 +1568,7 @@ export default function ChatScreen({ navigation }) {
                   ) : (
                     <>
                       <TouchableOpacity
-                        style={{ flex: 1, minWidth: 0 }}
+                        style={S.flex1Min0}
                         onPress={() => {
                           setSelectedChatId(String(chat.id));
                           closeItemMenu();
@@ -1550,9 +1577,9 @@ export default function ChatScreen({ navigation }) {
                         <Text
                           numberOfLines={1}
                           style={[
-                            styles.sidebarItemText,
-                            { color: C.sidebarText },
-                            isActive && { fontWeight: "700" },
+                            S.sidebarItemText,
+                            S.sidebarTextColor,
+                            isActive ? S.bold700 : null,
                           ]}
                         >
                           {chat.title}
@@ -1567,7 +1594,7 @@ export default function ChatScreen({ navigation }) {
                             e?.nativeEvent?.pageY ?? 0
                           )
                         }
-                        style={styles.dotButton}
+                        style={S.dotButton}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
                         <Icon name="ellipsis-vertical" size={18} color="#555" />
@@ -1579,20 +1606,15 @@ export default function ChatScreen({ navigation }) {
             })
           )
         ) : (
-          <Text style={{ color: "#555" }}>
+          <Text style={S.guestTextInfo}>
             เข้าสู่ระบบเพื่อสร้างห้องและบันทึกประวัติการสนทนา
           </Text>
         )}
 
         {user && (
-          <View style={{ marginTop: "auto" }}>
-            <TouchableOpacity
-              style={[styles.sidebarButton, { backgroundColor: C.headerBg }]}
-              onPress={addNewChat}
-            >
-              <Text style={{ color: isDark ? "#fff" : "#111" }}>
-                เพิ่มแชตใหม่
-              </Text>
+          <View style={S.sidebarBottom}>
+            <TouchableOpacity style={[S.sidebarButton, S.headerBg]} onPress={addNewChat}>
+              <Text style={isDark ? S.whiteText : S.blackText}>เพิ่มแชตใหม่</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1600,95 +1622,52 @@ export default function ChatScreen({ navigation }) {
 
       {sidebarOpen && (
         <TouchableOpacity
-          style={[styles.backdrop, { backgroundColor: C.overlay }]}
+          style={[S.backdrop, S.overlay]}
           activeOpacity={1}
           onPress={toggleSidebar}
         />
       )}
 
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: C.headerBg }]}>
-        <View style={styles.headerSideLeft}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+      <View style={[S.header, S.headerBg]}>
+        <View style={S.headerSideLeft}>
+          <View style={S.rowGap10}>
             <TouchableOpacity onPress={toggleSidebar}>
               <Icon name="menu" size={24} color={C.headerText} />
             </TouchableOpacity>
-            <Image
-              source={buddhadhamBG}
-              style={{
-                width: 34,
-                height: 34,
-                resizeMode: "contain",
-                tintColor: C.logoTint,
-              }}
-            />
+            <Image source={buddhadhamBG} style={S.logo} />
           </View>
         </View>
 
-        <View pointerEvents="none" style={styles.headerCenter}>
-          <Text style={[styles.headerTitle, { color: C.headerText }]}>
-            พุทธธรรม
-          </Text>
+        <View pointerEvents="none" style={S.headerCenter}>
+          <Text style={[S.headerTitle, S.headerText]}>{`พุทธธรรม`}</Text>
         </View>
 
-        <View
-          style={[
-            styles.headerSideRight,
-            { flexDirection: "row", alignItems: "center", gap: 8 },
-          ]}
-        >
-          <TouchableOpacity
-            onPress={toggleTheme}
-            style={{
-              paddingHorizontal: 10,
-              paddingVertical: 6,
-              borderRadius: 999,
-              backgroundColor: C.chipBg,
-            }}
-          >
-            <View
-              style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
-            >
-              <Icon
-                name={isDark ? "moon" : "sunny"}
-                size={16}
-                color={C.chipText}
-              />
-              <Text style={{ color: C.chipText, fontSize: 12 }}>
-                {isDark ? "Dark" : "Light"}
-              </Text>
+        <View style={S.headerSideRight}>
+          <TouchableOpacity onPress={toggleTheme} style={S.themeChip}>
+            <View style={S.rowGap6}>
+              <Icon name={isDark ? "moon" : "sunny"} size={16} color={C.chipText} />
+              <Text style={S.themeChipText}>{isDark ? "Dark" : "Light"}</Text>
             </View>
           </TouchableOpacity>
 
           {user ? (
-            <View style={{ flexDirection: "row", alignItems: "center" }}>
-              <View style={[styles.userBadge, { backgroundColor: C.chipBg }]}>
-                <Text
-                  style={[styles.userNameText, { color: C.chipText }]}
-                  numberOfLines={1}
-                >
+            <View style={S.rowCenter}>
+              <View style={[S.userBadge, S.chipBg]}>
+                <Text style={[S.userNameText, S.chipText]} numberOfLines={1}>
                   {user.name || "ผู้ใช้"}
                 </Text>
               </View>
               <TouchableOpacity onPress={handleLogout}>
-                <View
-                  style={[
-                    styles.logoutButton,
-                    { backgroundColor: "transparent" },
-                  ]}
-                >
-                  <Text style={[styles.logoutText, { color: C.headerText }]}>
-                    ออกจากระบบ
-                  </Text>
+                <View style={S.logoutButton}>
+                  <Text style={[S.logoutText, S.headerText]}>ออกจากระบบ</Text>
                 </View>
               </TouchableOpacity>
             </View>
           ) : (
             <TouchableOpacity onPress={() => navigation.navigate("Login")}>
-              <View style={[styles.loginButton, { backgroundColor: C.chipBg }]}>
-                <Text style={[styles.loginText, { color: C.chipText }]}>
-                  ลงชื่อเข้าใช้
-                </Text>
+              <View style={[S.loginButton, S.chipBg]}>
+                <Text style={[S.loginText, S.chipText]}>ลงชื่อเข้าใช้</Text>
               </View>
             </TouchableOpacity>
           )}
@@ -1697,41 +1676,18 @@ export default function ChatScreen({ navigation }) {
 
       {/* Body + Input */}
       <KeyboardAvoidingView
-        style={{ flex: 1 }}
+        style={S.flex1}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View
-            style={[
-              styles.background,
-              { backgroundColor: C.containerBg, flex: 1 },
-            ]}
-          >
-            <Image
-              source={buddhadhamBG}
-              style={{
-                position: "absolute",
-                width: "85%",
-                height: "85%",
-                opacity: isDark ? 0.08 : 0.12,
-                alignSelf: "center",
-                top: "3%",
-                tintColor: isDark ? "#000" : "#334155",
-                resizeMode: "contain",
-              }}
-            />
+          <View style={[S.background, S.containerBg, S.flex1]}>
+            <Image source={buddhadhamBG} style={S.bgWatermark} />
 
             {user && loadingHistory ? (
-              <View
-                style={{
-                  flex: 1,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
+              <View style={S.loadingWrap}>
                 <ActivityIndicator />
-                <Text style={{ color: isDark ? "#ddd" : "#333", marginTop: 8 }}>
+                <Text style={isDark ? S.loadingTextDark : S.loadingTextLight}>
                   กำลังโหลดประวัติ...
                 </Text>
               </View>
@@ -1741,26 +1697,32 @@ export default function ChatScreen({ navigation }) {
                 data={messages}
                 renderItem={renderItem}
                 keyExtractor={(item) => item.id.toString()}
-                style={{ flex: 1 }}
-                contentContainerStyle={{
-                  paddingTop: 12,
-                  paddingBottom: listContentPadBottom,
-                }}
-                ListFooterComponent={
-                  <View style={{ height: EXTRA_BOTTOM_GAP }} />
-                }
+                style={S.flex1}
+                contentContainerStyle={S.listContent(listContentPadBottom)}
+                ListFooterComponent={<View style={S.footerExtraGap} />}
                 keyboardShouldPersistTaps="handled"
                 onLayout={() => scrollToBottom(false)}
                 onContentSizeChange={() => scrollToBottom(false)}
               />
             )}
 
+            {/* ชิปชื่อไฟล์แนบ (ลอยเหนือแถบอินพุต) */}
+            {!!attachment && (
+              <View style={[S.attachmentFloat, { bottom: inputBarH + 8 }]}>
+                <Icon name="document-text" size={14} color={C.attachmentIcon} />
+                <Text numberOfLines={1} style={[S.attachmentText, S.attachmentText]}>
+                  {attachment.name}
+                </Text>
+                <TouchableOpacity onPress={removeAttachment} style={S.attachmentCloseBtn}>
+                  <Icon name="close" size={14} color={C.attachmentIcon} />
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* Input Bar */}
             <View
-              style={[
-                styles.inputContainerFixed,
-                { backgroundColor: C.inputBarBg, borderTopColor: C.border },
-              ]}
+              style={[S.inputContainerFixed, S.inputBarTheme]}
+              onLayout={(e) => setInputBarH(e.nativeEvent.layout.height || 0)}
             >
               {Platform.OS === "web" ? (
                 <textarea
@@ -1771,49 +1733,16 @@ export default function ChatScreen({ navigation }) {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      if (inputText.trim()) triggerSend();
+                      if (canSend) triggerSend();
                     }
                   }}
-
                   disabled={sending}
-                  style={{
-                    flex: 1,
-                    marginRight: 8,
-                    backgroundColor: C.inputBg,
-                    color: "#111",
-                    borderRadius: 22,
-                    border: `1px solid ${C.border}`,
-                    outline: "none",
-                    resize: "none",
-                    padding: `${PAD_V_TOP}px 14px ${PAD_V_BOTTOM}px`,
-                    fontSize: 16,
-                    lineHeight: `${LINE_H}px`,
-                    minHeight: MIN_H,
-                    maxHeight: MAX_H,
-                    overflowY: inputHeight >= MAX_H ? "auto" : "hidden",
-                    boxSizing: "border-box",
-                    opacity: sending ? 0.6 : 1,
-                  }}
+                  style={S.webTextArea}
                   onInput={adjustWebHeight}
                 />
               ) : (
                 <TextInput
-                  style={[
-                    styles.input,
-                    {
-                      height: inputHeight,
-                      maxHeight: MAX_H,
-                      textAlignVertical: "top",
-                      lineHeight: LINE_H,
-                      paddingTop: PAD_V_TOP,
-                      paddingBottom: PAD_V_BOTTOM,
-                      opacity: sending ? 0.6 : 1,
-                      backgroundColor: C.inputBg,
-                      borderColor: C.border,
-                      borderWidth: 1,
-                      color: "#111",
-                    },
-                  ]}
+                  style={S.input}
                   value={inputText}
                   placeholder="พิมพ์ข้อความ..."
                   editable={!sending}
@@ -1832,51 +1761,53 @@ export default function ChatScreen({ navigation }) {
                   onKeyPress={(e) => {
                     if (e.nativeEvent.key === "Enter") {
                       setInputText((prev) => prev.replace("\n", ""));
-                      if (!sending && inputText.trim()) sendMessage();
+                      if (!sending && canSend) {
+                        sendMessage();
+                      }
                     }
                   }}
                   onSubmitEditing={() => {
-                    if (inputText.trim()) triggerSend();
+                    if (canSend) triggerSend();
                   }}
-
                   scrollEnabled={inputHeight >= MAX_H}
                 />
               )}
 
+              {/* ปุ่มแนบไฟล์ */}
+              <TouchableOpacity
+                onPress={pickAttachment}
+                activeOpacity={0.85}
+                style={[S.actionButton, S.attachBtn]}
+                accessibilityRole="button"
+                accessibilityLabel="แนบไฟล์ข้อความ"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Icon name="attach" size={20} color="#fff" />
+              </TouchableOpacity>
+
+              {/* ปุ่มไมค์ */}
               <TouchableOpacity
                 onPress={recording ? stopVoice : startVoice}
                 activeOpacity={0.85}
                 style={[
-                  styles.actionButton,
-                  {
-                    backgroundColor: recording ? C.cancelBtn : C.sendBtn,
-                    marginRight: 8,
-                  },
+                  S.actionButton,
+                  recording ? S.actionBtnCancel : S.actionBtnSend,
+                  S.mr8,
                 ]}
                 accessibilityRole="button"
-                accessibilityLabel={
-                  recording ? "หยุดพิมพ์ด้วยเสียง" : "พิมพ์ด้วยเสียง"
-                }
+                accessibilityLabel={recording ? "หยุดพิมพ์ด้วยเสียง" : "พิมพ์ด้วยเสียง"}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Icon
-                  name={recording ? "mic-off" : "mic"}
-                  size={20}
-                  color="#fff"
-                />
+                <Icon name={recording ? "mic-off" : "mic"} size={20} color="#fff" />
               </TouchableOpacity>
 
+              {/* ปุ่มส่ง */}
               {sending ? (
                 <TouchableOpacity
                   onPress={showStop ? cancelSending : undefined}
                   disabled={!showStop}
                   activeOpacity={0.85}
-                  style={[
-                    styles.actionButton,
-                    showStop
-                      ? { backgroundColor: C.cancelBtn }
-                      : { backgroundColor: C.sendBtn, opacity: 0.6 },
-                  ]}
+                  style={[S.actionButton, showStop ? S.actionBtnCancel : S.actionBtnSendDisabled]}
                   accessibilityRole="button"
                   accessibilityLabel={showStop ? "ยกเลิกการส่ง" : "กำลังส่ง..."}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -1890,15 +1821,14 @@ export default function ChatScreen({ navigation }) {
               ) : (
                 <TouchableOpacity
                   onPress={() => {
-                    if (inputText.trim()) triggerSend();
+                    if (canSend) triggerSend();
                   }}
-
-                  disabled={sending || !inputText.trim()}
+                  disabled={!canSend}
                   activeOpacity={0.85}
                   style={[
-                    styles.actionButton,
-                    { backgroundColor: C.sendBtn },
-                    (sending || !inputText.trim()) && { opacity: 0.6 },
+                    S.actionButton,
+                    S.actionBtnSend,
+                    !canSend ? S.disabled06 : null,
                   ]}
                   accessibilityRole="button"
                   accessibilityLabel="ส่งข้อความ"
@@ -1919,15 +1849,11 @@ export default function ChatScreen({ navigation }) {
         animationType="fade"
         onRequestClose={closeItemMenu}
       >
-        <TouchableOpacity
-          style={styles.popupBackdrop}
-          activeOpacity={1}
-          onPress={closeItemMenu}
-        />
-        <View style={[styles.popupMenu, getPopupStyle()]}>
-          <View style={styles.popupArrow} />
+        <TouchableOpacity style={S.popupBackdrop} activeOpacity={1} onPress={closeItemMenu} />
+        <View style={[S.popupMenu, getPopupStyle()]}>
+          <View style={S.popupArrow} />
           <TouchableOpacity
-            style={styles.popupItem}
+            style={S.popupItem}
             onPress={() => {
               const id = menuFor;
               if (!id) return;
@@ -1939,16 +1865,16 @@ export default function ChatScreen({ navigation }) {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.popupItem}
+            style={S.popupItem}
             onPress={() => {
               closeItemMenu();
               if (menuFor) deleteChat(menuFor);
             }}
           >
-            <Text style={{ color: "#e74c3c" }}>ลบแชตนี้</Text>
+            <Text style={S.dangerText}>ลบแชตนี้</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.popupItem} onPress={closeItemMenu}>
+          <TouchableOpacity style={S.popupItem} onPress={closeItemMenu}>
             <Text>ยกเลิก</Text>
           </TouchableOpacity>
         </View>
@@ -1957,188 +1883,429 @@ export default function ChatScreen({ navigation }) {
   );
 }
 
-// ============================== Styles ==============================
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: {
-    height: 60,
-    paddingHorizontal: 12,
-    justifyContent: "center",
-    zIndex: 2,
-  },
-  headerCenter: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    alignItems: "center",
-  },
-  headerSideLeft: {
-    position: "absolute",
-    left: 10,
-    top: 0,
-    bottom: 0,
-    justifyContent: "center",
-  },
-  headerSideRight: {
-    position: "absolute",
-    right: 10,
-    top: 0,
-    bottom: 0,
-    justifyContent: "center",
-    alignItems: "flex-end",
-  },
-  headerTitle: { fontSize: 18, fontWeight: "bold", letterSpacing: 0.3 },
+// ============================== Styles (Factory) ==============================
+const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
+  return StyleSheet.create({
+    // Layout & containers
+    container: { flex: 1 },
+    withStatusBarPad: { paddingTop: StatusBar.currentHeight || 20 },
+    containerBg: { backgroundColor: C.containerBg },
+    flex1: { flex: 1 },
 
-  loginButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  loginText: { fontSize: 14 },
+    // Sidebar
+    sidebar: {
+      position: "absolute",
+      top: 0,
+      bottom: 0,
+      left: 0,
+      width: 260,
+      padding: 14,
+      zIndex: 5,
+    },
+    sidebarBg: { backgroundColor: C.sidebarBg },
+    sidebarBorderRight: { borderRightColor: C.divider, borderRightWidth: 1 },
+    sidebarHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 10,
+    },
+    sidebarTitle: { fontWeight: "bold", fontSize: 16 },
+    sidebarTitleColor: { color: C.sidebarText },
+    padLeft8: { paddingLeft: 8 },
+    padV10: { paddingVertical: 10 },
+    rowCenter: { flexDirection: "row", alignItems: "center" },
+    rowGap10: { flexDirection: "row", alignItems: "center", columnGap: 10 },
+    rowGap6: { flexDirection: "row", alignItems: "center", columnGap: 6 },
 
-  userBadge: {
-    maxWidth: 160,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 10,
-  },
-  userNameText: { fontSize: 16 },
-  logoutButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  logoutText: { fontSize: 14 },
+    sidebarItemRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+    },
+    sidebarItemBorder: { borderColor: C.divider },
+    sidebarItemActiveDark: { backgroundColor: "#C9CCD3" },
+    sidebarItemActiveLight: { backgroundColor: "#E6E9F0" },
+    sidebarItemRadiusPad: { borderRadius: 8, paddingHorizontal: 8 },
+    sidebarItemText: { paddingRight: 8 },
+    sidebarTextColor: { color: C.sidebarText },
+    bold700: { fontWeight: "700" },
+    dotButton: { paddingHorizontal: 4, paddingVertical: 4 },
+    sidebarButton: { padding: 10, borderRadius: 8, alignItems: "center", marginTop: 10 },
+    sidebarBottom: { marginTop: "auto" },
 
-  background: { flex: 1 },
+    // Backdrop
+    backdrop: {
+      position: "absolute",
+      top: 0,
+      bottom: 0,
+      left: 0,
+      right: 0,
+      zIndex: 4,
+    },
+    overlay: { backgroundColor: C.overlay },
 
-  messageWrapper: { paddingVertical: 10, paddingHorizontal: 12 },
-  timeText: { fontSize: 10 },
+    // Header
+    header: {
+      height: 60,
+      paddingHorizontal: 12,
+      justifyContent: "center",
+      zIndex: 2,
+    },
+    headerBg: { backgroundColor: C.headerBg },
+    headerCenter: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      alignItems: "center",
+    },
+    headerSideLeft: {
+      position: "absolute",
+      left: 10,
+      top: 0,
+      bottom: 0,
+      justifyContent: "center",
+    },
+    headerSideRight: {
+      position: "absolute",
+      right: 10,
+      top: 0,
+      bottom: 0,
+      height: "100%",            // ให้กล่องสูงเท่าหัวแถบ
+      justifyContent: "center",  // จัดกึ่งกลางแนวตั้ง
+      alignItems: "center",      // ไม่ให้ลอยขึ้น-ลง
+      flexDirection: "row",
+      columnGap: 8,
+    },
 
-  input: {
-    flex: 1,
-    borderRadius: 22,
-    paddingHorizontal: 14,
-    fontSize: 16,
-    marginRight: 8,
-    minHeight: MIN_H,
-  },
+    headerTitle: { fontSize: 18, fontWeight: "bold", letterSpacing: 0.3 },
+    headerText: { color: C.headerText },
 
-  inputContainerFixed: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 12,
-    borderTopWidth: 1,
-  },
+    // Theme chip
+    themeChip: {
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 999,
+      backgroundColor: C.chipBg,
+    },
+    themeChipText: { color: C.chipText, fontSize: 12 },
 
-  actionButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 9999,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 6,
-  },
+    // Login / user
+    loginButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+    loginText: { fontSize: 14 },
+    chipBg: { backgroundColor: C.chipBg },
+    chipText: { color: C.chipText },
+    userBadge: {
+      maxWidth: 160,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 10,
+    },
+    userNameText: { fontSize: 16 },
+    logoutButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, backgroundColor: "transparent" },
+    logoutText: { fontSize: 14 },
+    whiteText: { color: "#fff" },
+    blackText: { color: "#111" },
+    guestTextInfo: { color: "#555" },
 
-  sidebar: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    width: 260,
-    padding: 14,
-    zIndex: 5,
-  },
-  sidebarTitle: { fontWeight: "bold", fontSize: 16 },
-  sidebarHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  sidebarItemRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-  },
-  sidebarItemText: { paddingRight: 8 },
-  dotButton: { paddingHorizontal: 4, paddingVertical: 4 },
-  sidebarButton: {
-    padding: 10,
-    borderRadius: 8,
-    alignItems: "center",
-    marginTop: 10,
-  },
+    // Background image
+    background: { flex: 1 },
+    bgWatermark: {
+      position: "absolute",
+      width: "85%",
+      height: "85%",
+      opacity: isDark ? 0.08 : 0.12,
+      alignSelf: "center",
+      top: "3%",
+      tintColor: isDark ? "#000" : "#334155",
+      resizeMode: "contain",
+    },
+    logo: {
+      width: 34,
+      height: 34,
+      resizeMode: "contain",
+      tintColor: C.logoTint,
+    },
 
-  backdrop: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    right: 0,
-    zIndex: 4,
-  },
+    // List
+    footerExtraGap: { height: EXTRA_BOTTOM_GAP },
+    listContent: (padBottom) => ({
+      paddingTop: 12,
+      paddingBottom: padBottom,
+    }),
 
-  popupBackdrop: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: "transparent",
-  },
-  popupMenu: {
-    position: "absolute",
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    paddingVertical: 6,
-    shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-    zIndex: 1000,
-  },
-  popupArrow: {
-    position: "absolute",
-    top: -8,
-    left: 16,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 8,
-    borderRightWidth: 8,
-    borderBottomWidth: 8,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderBottomColor: "#fff",
-  },
-  popupItem: { paddingVertical: 10, paddingHorizontal: 14 },
+    // Message row
+    msgRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 10,
+      paddingHorizontal: 10,
+      marginVertical: 6,
+    },
+    rowR: { flexDirection: "row-reverse" },
+    rowL: { flexDirection: "row" },
 
-  renameInlineRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    width: "100%",
-  },
-  renameInlineInput: {
-    flex: 1,
-    minWidth: 0,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    fontSize: 14,
-  },
-  renameInlineBtns: { flexDirection: "row", alignItems: "center" },
-  inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+    // Avatar
+    avatarWrap: {
+      width: AVATAR_SIZE,
+      height: AVATAR_SIZE,
+      borderRadius: AVATAR_SIZE / 2,
+      overflow: "hidden",
+      borderWidth: 2,
+      borderColor: C.avatarRing,
+      backgroundColor: "#fff",
+    },
+    avatarImg: { width: "100%", height: "100%" },
 
-  msgRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    paddingHorizontal: 10,
-    marginVertical: 6,
-  },
-  rowR: { flexDirection: "row-reverse" },
-  rowL: { flexDirection: "row" },
-});
+    // Bubble
+    messageWrapper: {
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      shadowColor: "#000",
+      shadowOpacity: 0.1,
+      shadowRadius: 8,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 2,
+      marginTop: cornerShift,
+      maxWidth: BUBBLE_MAX_W,
+      flexShrink: 1,
+      borderBottomLeftRadius: 16,
+      borderBottomRightRadius: 16,
+    },
+    bubbleUser: {
+      backgroundColor: C.bubbleUserBg,
+      alignSelf: "flex-end",
+      borderTopLeftRadius: 16,
+      borderTopRightRadius: 6,
+    },
+    bubbleBot: {
+      backgroundColor: C.bubbleBotBg,
+      alignSelf: "flex-start",
+      borderTopLeftRadius: 6,
+      borderTopRightRadius: 16,
+    },
+    bubbleUserText: { color: C.bubbleUserText, fontSize: 16 },
+    bubbleBotText: { color: C.bubbleBotText, fontSize: 16 },
+
+    pendingRow: { flexDirection: "row", alignItems: "center", columnGap: 8 },
+
+    // Markdown (RNMDD styles must be objects)
+    mdBodyUser: {
+      fontSize: 16,
+      color: C.bubbleUserText,
+      lineHeight: 22,
+      ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}),
+    },
+    mdBodyBot: {
+      fontSize: 16,
+      color: C.bubbleBotText,
+      lineHeight: 22,
+      ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}),
+    },
+    mdStrongUser: { color: C.bubbleUserText },
+    mdStrongBot: { color: C.bubbleBotText },
+    mdEmUser: { color: C.bubbleUserText },
+    mdEmBot: { color: C.bubbleBotText },
+    mdCodeBlock: {
+      color: isDark ? "#fff" : "#0F172A",
+      backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
+      borderRadius: 8,
+      padding: 8,
+    },
+    mdBlockquote: {
+      color: isDark ? "#fff" : "#0F172A",
+      backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
+      fontStyle: "italic",
+      borderLeftWidth: 3,
+      borderLeftColor: isDark ? "#64748b" : "#c7d2fe",
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+
+    // Time text
+    timeText: { fontSize: 10, color: C.timeText, marginHorizontal: 6, marginTop: 4, maxWidth: BUBBLE_MAX_W },
+    alignRight: { alignSelf: "flex-end", textAlign: "right" },
+    alignLeft: { alignSelf: "flex-start", textAlign: "left" },
+    timeUser: {},
+    timeBot: {},
+
+    // Loading
+    loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
+    loadingTextDark: { color: "#ddd", marginTop: 8 },
+    loadingTextLight: { color: "#333", marginTop: 8 },
+
+    // Input Bar
+    inputContainerFixed: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 20,
+      paddingTop: 12,
+      paddingBottom: 12,
+      borderTopWidth: 1,
+      position: "relative",
+    },
+    inputBarTheme: {
+      backgroundColor: C.inputBarBg,
+      borderTopColor: C.border,
+    },
+
+    // Native TextInput
+    input: {
+      flex: 1,
+      borderRadius: 22,
+      paddingHorizontal: 14,
+      fontSize: 16,
+      marginRight: 8,
+      minHeight: MIN_H,
+      height: inputHeight,
+      maxHeight: MAX_H,
+      textAlignVertical: "top",
+      lineHeight: LINE_H,
+      paddingTop: PAD_V_TOP,
+      paddingBottom: PAD_V_BOTTOM,
+      backgroundColor: C.inputBg,
+      borderColor: C.border,
+      borderWidth: 1,
+      color: "#111",
+      opacity: 1,
+    },
+
+    // Web textarea
+    webTextArea: {
+      flex: 1,
+      marginRight: 8,
+      backgroundColor: C.inputBg,
+      color: "#111",
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: C.border,
+      outlineStyle: "none",
+      resize: "none",
+      paddingTop: PAD_V_TOP,
+      paddingBottom: PAD_V_BOTTOM,
+      paddingHorizontal: 14,
+      fontSize: 16,
+      lineHeight: `${LINE_H}px`,
+      minHeight: MIN_H,
+      maxHeight: MAX_H,
+      boxSizing: "border-box",
+      overflowY: inputHeight >= MAX_H ? "auto" : "hidden",
+      opacity: 1,
+    },
+
+    // ชิปไฟล์แนบ (ลอย)
+    attachmentFloat: {
+      position: "absolute",
+      left: 20,
+      right: 120,
+      // bottom: ถูกกำหนดแบบไดนามิกจาก inputBarH + 8
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 999,
+      backgroundColor: C.inputBg,
+      borderWidth: 1,
+      borderColor: C.border,
+      zIndex: 50,
+      elevation: 12,
+      shadowColor: "#000",
+      shadowOpacity: 0.15,
+      shadowRadius: 8,
+      shadowOffset: { width: 0, height: 3 },
+    },
+    attachmentText: {
+      marginLeft: 6,
+      flex: 1,
+      color: "#0F172A",
+      ...(Platform.OS === "web"
+        ? { whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }
+        : {}),
+    },
+
+    attachmentCloseBtn: { paddingHorizontal: 4, paddingVertical: 2 },
+
+    actionButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      borderRadius: 9999,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      shadowColor: "#000",
+      shadowOpacity: 0.12,
+      shadowRadius: 8,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 6,
+    },
+    attachBtn: { backgroundColor: C.sendBtn, marginRight: 8 },
+    actionBtnSend: { backgroundColor: C.sendBtn },
+    actionBtnCancel: { backgroundColor: C.cancelBtn },
+    actionBtnSendDisabled: { backgroundColor: C.sendBtn, opacity: 0.6 },
+    disabled06: { opacity: 0.6 },
+    mr8: { marginRight: 8 },
+
+    // Popup
+    popupBackdrop: {
+      position: "absolute",
+      top: 0,
+      bottom: 0,
+      left: 0,
+      right: 0,
+      backgroundColor: "transparent",
+    },
+    popupMenu: {
+      position: "absolute",
+      backgroundColor: "#fff",
+      borderRadius: 12,
+      paddingVertical: 6,
+      shadowColor: "#000",
+      shadowOpacity: 0.15,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 8,
+      zIndex: 1000,
+    },
+    popupArrow: {
+      position: "absolute",
+      top: -8,
+      left: 16,
+      width: 0,
+      height: 0,
+      borderLeftWidth: 8,
+      borderRightWidth: 8,
+      borderBottomWidth: 8,
+      borderLeftColor: "transparent",
+      borderRightColor: "transparent",
+      borderBottomColor: "#fff",
+    },
+    popupItem: { paddingVertical: 10, paddingHorizontal: 14 },
+    dangerText: { color: "#e74c3c" },
+
+    // Rename inline
+    renameInlineRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      width: "100%",
+    },
+    renameInlineInput: {
+      flex: 1,
+      minWidth: 0,
+      borderWidth: 1,
+      borderRadius: 10,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      fontSize: 14,
+    },
+    renameInlineInputTheme: { borderColor: C.divider, backgroundColor: "#fff" },
+    renameInlineBtns: { flexDirection: "row", alignItems: "center" },
+    inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+
+    // Text
+    timeUserText: {},
+    timeBotText: {},
+  });
+};

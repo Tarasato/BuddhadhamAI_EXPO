@@ -25,7 +25,7 @@ const TEMP_ERROR_SNIPPETS = [
  * ====================================================== */
 export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) => {
   const q = (question ?? "").trim();
-  const MAX_QUESTION_LEN = 4000;
+  const MAX_QUESTION_LEN = 999999;
 
   if (!q) {
     return {
@@ -58,8 +58,8 @@ export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) =
     question: q,
     ...(chatId != null ? { chatId } : {}),
     ...(k != null ? { k: clamp(parseInt(k, 10) || 3, 1, 50) } : { k: 10 }),
-    ...(d != null ? { d: clamp(Number(d) || 0.75, 0, 1) } : { d: 0.75 }),
-    ...(dbSaveHint ? { dbSaveHint } : {}), // ⬅️ ส่ง hint ให้ backend ถ้าต้องการบันทึกชื่อไฟล์/ข้อความ
+    ...(d != null ? { d: clamp(Number(d) || 0.75, 0, 1) } : { d: 300 }),
+    ...(dbSaveHint ? { dbSaveHint } : {}),
   };
 
   if (inflightController) {
