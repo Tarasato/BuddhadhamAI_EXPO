@@ -1,12 +1,11 @@
 import { chatClient, qNaClient } from "./client";
 
 /* ========================================================
- * 🔸 Helpers
+ * Helpers
  * ====================================================== */
 const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ควบคุมการยิง askQuestion ไม่ให้ยิงพร้อมกันซ้ำ
 let inflightController = null;
 let lastFiredAt = 0;
 const MIN_COOLDOWN_MS = 500;
@@ -21,7 +20,7 @@ const TEMP_ERROR_SNIPPETS = [
 ];
 
 /* ========================================================
- * 🔸 QnA: Ask Question
+ * QnA: Ask Question
  * ====================================================== */
 export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) => {
   const q = (question ?? "").trim();
@@ -72,6 +71,8 @@ export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) =
   const BASE_BACKOFF_MS = 600;
 
   let attempt = 0;
+  // retry on temporary errors; preserve messages/shape
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       const { data } = await qNaClient.post("/ask", payload, {
@@ -122,23 +123,17 @@ export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) =
   }
 };
 
-
 /* ========================================================
- * 🔸 Chat: CRUD / Fetch
+ * Chat: CRUD / Fetch
  * ====================================================== */
 export const getUserChats = async (userId) => {
   if (!userId) return [];
   const { data } = await chatClient.get(`/all/${userId}`);
-  return Array.isArray(data?.data)
-    ? data.data
-    : Array.isArray(data)
-      ? data
-      : [];
+  return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 };
 
 export const createChat = async ({ chatHeader, userId }) => {
-  if (!chatHeader || !String(chatHeader).trim())
-    throw new Error("chatHeader is required");
+  if (!chatHeader || !String(chatHeader).trim()) throw new Error("chatHeader is required");
 
   const body = {
     chatHeader: String(chatHeader).trim(),
@@ -169,25 +164,17 @@ export const getChatById = async (chatId) => {
 
 export const getAllChats = async () => {
   const { data } = await chatClient.get(`/all`);
-  return Array.isArray(data?.data)
-    ? data.data
-    : Array.isArray(data)
-      ? data
-      : [];
+  return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 };
 
 /* ========================================================
- * 🔸 QnA: History / Cancel / Delete
+ * QnA: History / Cancel / Delete / Status / Save
  * ====================================================== */
 export const getChatQna = async (chatId) => {
   if (!chatId) return [];
   try {
     const { data } = await qNaClient.get(`/${chatId}`);
-    return Array.isArray(data?.data)
-      ? data.data
-      : Array.isArray(data)
-        ? data
-        : [];
+    return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
   } catch (err) {
     if (err?.response?.status === 404) return [];
     throw err;
@@ -224,7 +211,6 @@ export const deleteQna = async (qNaId) => {
         }
       }
     }
-
     if (status1 === 404) return { ok: true, deleted: false };
     throw e1;
   }
@@ -236,9 +222,6 @@ export const checkStatus = async (taskId) => {
   return data?.data ?? data;
 };
 
-// ==============================
-// บันทึกคำตอบเออเรอร์/ข้อความผลลัพธ์
-// ==============================
 export const saveAnswer = async ({ taskId, chatId, qNaWords }) => {
   if (!taskId) throw new Error("taskId is required");
   if (!chatId) throw new Error("chatId is required");
@@ -249,7 +232,6 @@ export const saveAnswer = async ({ taskId, chatId, qNaWords }) => {
     chatId: Number(chatId),
     qNaWords: String(qNaWords),
   };
-
 
   const { data } = await qNaClient.post(`/answer`, payload);
   return data?.data ?? data;

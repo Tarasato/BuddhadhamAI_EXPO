@@ -18,19 +18,19 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
-  PermissionsAndroid,
   KeyboardAvoidingView,
+  ToastAndroid,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import Markdown from "react-native-markdown-display";
 import Icon from "react-native-vector-icons/Ionicons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Voice from "@react-native-voice/voice";
 import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system/legacy";
 
 import { useAuth } from "../src/auth/AuthContext";
 import { useWS } from "../src/ws/WSContext";
+
+import useThemePreference from "../src/hooks/useThemePreference";
 
 import buddhadhamBG from "../assets/buddhadham.png";
 import userAvatar from "../assets/userAvatar.png";
@@ -50,7 +50,7 @@ import {
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-// ============================== Config ==============================
+/* ─────────────────────────── Constants ─────────────────────────── */
 const MIN_H = 40;
 const MAX_H = 140;
 const LINE_H = 20;
@@ -62,9 +62,12 @@ const CORNER_NEAR_AVATAR = 6;
 
 const STORAGE_PREFIX = "chat_state_v1:";
 const LAST_CHAT_ID_KEY = "last_selected_chat_id";
-const THEME_KEY = "ui_theme_dark";
 
-const MAX_ATTACHMENT_BYTES = 1_000_000; // 1MB
+
+const MAX_ATTACHMENT_BYTES = 100 * 1024;
+const SERVER_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+const FRONTEND_BODY_LIMIT_BYTES = Math.floor(SERVER_BODY_LIMIT_BYTES * 0.9);
+
 const SUPPORTED_MIME = [
   "text/plain",
   "text/markdown",
@@ -74,8 +77,9 @@ const SUPPORTED_MIME = [
   "text/*",
 ];
 
-// ============================== Helpers ==============================
+/* ─────────────────────────── Utils ─────────────────────────── */
 const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
+const toTS = (v) => (v ? (typeof v === "number" ? v : Date.parse(v)) || 0 : 0);
 const formatTS = (d) =>
   new Date(d).toLocaleString("th-TH", {
     year: "numeric",
@@ -86,28 +90,48 @@ const formatTS = (d) =>
     second: "2-digit",
     hour12: false,
   });
-const toTS = (v) => {
-  if (!v) return 0;
-  const n = typeof v === "number" ? v : Date.parse(v);
-  return Number.isFinite(n) ? n : 0;
+
+const notify = (titleOrMsg, msg) => {
+  const text = msg ? `${titleOrMsg}\n${msg}` : String(titleOrMsg);
+  if (Platform.OS === "web") {
+    try { window.alert(text); } catch { }
+    return;
+  }
+  if (Platform.OS === "android") {
+    try { ToastAndroid.show(text, ToastAndroid.SHORT); } catch { }
+    return;
+  }
+  Alert.alert(titleOrMsg, msg);
 };
 
-// แปลงข้อความจาก DB มา “โชว์เฉพาะ คำถาม + ชื่อไฟล์” (ตัดเนื้อหาไฟล์ออก)
+const inferMimeFromName = (name) => {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  const map = { txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json", xml: "application/xml" };
+  return map[ext] || "text/plain";
+};
+
+const utf8ByteLength = (str) => {
+  try {
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(str || "").length;
+  } catch { }
+  const s = String(str || "");
+  let bytes = 0;
+  for (let i = 0; i < s.length; i++) {
+    const codePoint = s.charCodeAt(i);
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : 3;
+  }
+  return bytes;
+};
+
 const toDisplayQuestionOnly = (text) => {
   if (!text) return "";
   const s = String(text);
-
-  // รูปแบบใหม่: มี "(ไฟล์แนบ: ชื่อไฟล์)"
   const newMark = "(ไฟล์แนบ:";
   const newIdx = s.indexOf(newMark);
   if (newIdx >= 0) {
-    // เก็บจนถึงวงเล็บปิดของ "(ไฟล์แนบ: ...)"
     const closeIdx = s.indexOf(")", newIdx);
-    const head = closeIdx >= 0 ? s.slice(0, closeIdx + 1) : s.slice(0, newIdx) + ")";
-    return head.trim();
+    return (closeIdx >= 0 ? s.slice(0, closeIdx + 1) : s.slice(0, newIdx) + ")").trim();
   }
-
-  // รูปแบบเก่า: "---\n📎 เนื้อหาไฟล์แนบ (filename):\n<content>"
   const oldSep = "\n---\n";
   const oldIdx = s.indexOf(oldSep);
   if (oldIdx >= 0) {
@@ -122,223 +146,77 @@ const toDisplayQuestionOnly = (text) => {
     }
     return s.slice(0, oldIdx).trim();
   }
-
   return s;
 };
 
+const buildFullQuestion = (rawText, attachName, attachTextTrim) => {
+  const hasText = !!(rawText && rawText.trim());
+  const hasAttach = !!(attachTextTrim && attachTextTrim.trim());
+  if (hasAttach) {
+    return hasText
+      ? `${rawText.trim()}\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachName}):\n${attachTextTrim.trim()}`
+      : `(ไฟล์แนบ: ${attachName})\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachName}):\n${attachTextTrim.trim()}`;
+  }
+  return (rawText || "").trim();
+};
+
+const estimatePayloadBytes = ({ chatId, question, dbSaveHint }) =>
+  utf8ByteLength(JSON.stringify({ ...(chatId ? { chatId } : {}), question, ...(dbSaveHint ? { dbSaveHint } : {}) }));
+
+/* ─────────────────────── Storage (Async + Web) ─────────────────────── */
 const storage = {
   async getItem(key) {
-    try {
-      if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key);
-    } catch { }
-    if (Platform.OS === "web") {
-      try {
-        return window.localStorage.getItem(key);
-      } catch { }
-    }
+    try { if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key); } catch { }
+    if (Platform.OS === "web") { try { return window.localStorage.getItem(key); } catch { } }
     return null;
   },
   async setItem(key, val) {
-    try {
-      if (AsyncStorage?.setItem) return await AsyncStorage.setItem(key, val);
-    } catch { }
-    if (Platform.OS === "web") {
-      try {
-        window.localStorage.setItem(key, val);
-      } catch { }
-    }
+    try { if (AsyncStorage?.setItem) return await AsyncStorage.setItem(key, val); } catch { }
+    if (Platform.OS === "web") { try { window.localStorage.setItem(key, val); } catch { } }
   },
 };
 
-// ============================== Component ==============================
+/* ─────────────────────────── Component ─────────────────────────── */
 export default function ChatScreen({ navigation }) {
   const { on, subscribeTask } = useWS();
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
 
-  // Theme
-  const [isDark, setIsDark] = useState(true);
-  useEffect(() => {
-    (async () => {
-      const saved = await storage.getItem(THEME_KEY);
-      if (saved === "true") setIsDark(true);
-      if (saved === "false") setIsDark(false);
-    })();
-  }, []);
-  const toggleTheme = async () => {
-    const next = !isDark;
-    setIsDark(next);
-    await storage.setItem(THEME_KEY, next ? "true" : "false");
-  };
+  /* ── Theme ── */
+  const { isDark, toggleTheme, C } = useThemePreference("chat");
 
-  const C = useMemo(
-    () =>
-      isDark
-        ? {
-          containerBg: "#4A5368",
-          headerBg: "#2F3644",
-          headerText: "#F8FAFC",
-          chipBg: "rgba(255,255,255,0.08)",
-          chipText: "#E5E7EB",
-          sidebarBg: "#D7D9DE",
-          sidebarText: "#222222",
-          divider: "#B9BDC6",
-          bubbleUserBg: "#FFFFFF",
-          bubbleUserText: "#0F172A",
-          bubbleBotBg: "#2E3140",
-          bubbleBotText: "#FFFFFF",
-          timeText: "#D1D5DB",
-          inputBg: "#FFFFFF",
-          inputBarBg: "#2F3644",
-          border: "#404656",
-          sendBtn: "#60A5FA",
-          cancelBtn: "#F05252",
-          overlay: "rgba(0,0,0,0.35)",
-          avatarRing: "#111827",
-          logoTint: "#FFFFFF",
-          dateChip: "rgba(255,255,255,0.18)",
-        }
-        : {
-          containerBg: "#EEF2F7",
-          headerBg: "#FFFFFF",
-          headerText: "#0F172A",
-          chipBg: "#E8EDF6",
-          chipText: "#0F172A",
-          sidebarBg: "#F1F3F6",
-          sidebarText: "#1F2937",
-          divider: "#D7DDEA",
-          bubbleUserBg: "#FFFFFF",
-          bubbleUserText: "#0F172A",
-          bubbleBotBg: "#E9EDF6",
-          bubbleBotText: "#0F172A",
-          timeText: "#6B7280",
-          inputBg: "#FFFFFF",
-          inputBarBg: "#FFFFFF",
-          border: "#D4D9E5",
-          sendBtn: "#2563EB",
-          cancelBtn: "#DC2626",
-          overlay: "rgba(0,0,0,0.18)",
-          avatarRing: "#93C5FD",
-          logoTint: "#000000",
-          dateChip: "rgba(15,23,42,0.06)",
-        },
-    [isDark]
-  );
 
-  // Helpers: pending state reset
-  const firingRef = useRef(false);
+  /* ── Global sending/pending state ── */
   const [sending, setSending] = useState(false);
   const awaitingRef = useRef(false);
-  useEffect(() => {
-    awaitingRef.current = sending;
-  }, [sending]);
-
-  // แนบไฟล์ข้อความ
-  const [attachment, setAttachment] = useState(null); // { name, uri, size, mime, text }
-  const pickAttachment = async () => {
-    try {
-      const res = await DocumentPicker.getDocumentAsync({
-        multiple: false,
-        copyToCacheDirectory: true,
-        type: SUPPORTED_MIME,
-      });
-      if (res.canceled) return;
-
-      const f =
-        res.assets?.[0] ??
-        (res.type === "success"
-          ? {
-            name: res.name,
-            size: res.size,
-            uri: res.uri,
-            mimeType: res.mimeType,
-          }
-          : null);
-      if (!f) return;
-
-      const { name, size, mimeType, uri } = f;
-      const mime = mimeType || "text/plain";
-      const okType = SUPPORTED_MIME.some((m) =>
-        m.endsWith("/*") ? mime.startsWith(m.replace("/*", "")) : m === mime
-      );
-      if (!okType)
-        return Alert.alert(
-          "ไม่รองรับไฟล์",
-          "แนบได้เฉพาะไฟล์ข้อความ (.txt, .md, .csv, .json, .xml)"
-        );
-      if (size && size > MAX_ATTACHMENT_BYTES)
-        return Alert.alert("ไฟล์ใหญ่เกินไป", "จำกัด 1MB");
-
-      // อ่านไฟล์
-      let text = "";
-      if (Platform.OS === "web") {
-        text = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = (err) => reject(err);
-          const blobLike = f.file || f.blob || res.file || null;
-          if (blobLike) reader.readAsText(blobLike);
-          else {
-            fetch(uri)
-              .then((r) => r.blob())
-              .then((b) => reader.readAsText(b))
-              .catch(reject);
-          }
-        });
-      } else {
-        text = await FileSystem.readAsStringAsync(uri, {
-          encoding: "utf8",
-        });
-      }
-
-      if (!text || !text.trim())
-        return Alert.alert("ไฟล์ว่าง", "ไม่พบเนื้อหาในไฟล์ที่เลือก");
-
-      setAttachment({ name, uri, size, mime, text });
-    } catch (e) {
-      console.warn("pickAttachment error:", e);
-      Alert.alert("ผิดพลาด", "เลือกไฟล์ไม่สำเร็จ");
-    }
-  };
-  const removeAttachment = () => setAttachment(null);
+  useEffect(() => { awaitingRef.current = sending; }, [sending]);
 
   const [showStop, setShowStop] = useState(false);
   const stopTimerRef = useRef(null);
 
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const currentTaskIdRef = useRef(null);
-  useEffect(() => {
-    currentTaskIdRef.current = currentTaskId;
-  }, [currentTaskId]);
+  useEffect(() => { currentTaskIdRef.current = currentTaskId; }, [currentTaskId]);
 
   const [pendingQnaId, setPendingQnaId] = useState(null);
   const [pendingUserMsgId, setPendingUserMsgId] = useState(null);
 
-  // Chat/UI State
+  /* ── UI state ── */
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarAnim = useState(new Animated.Value(-260))[0];
   const [inputHeight, setInputHeight] = useState(MIN_H);
-
-  // ⬇️ ความสูงจริงของแถบอินพุต (ใช้ยกชิปไฟล์แนบขึ้น)
   const [inputBarH, setInputBarH] = useState(0);
 
-  // Calculations needed by styles
   const screenW = Dimensions.get("window").width;
   const ROW_HPAD = 10;
   const GAP_BETWEEN = 10;
   const HALF_W = Math.floor(screenW * 0.4) - (ROW_HPAD + GAP_BETWEEN);
   const BUBBLE_MAX_W = Math.max(HALF_W);
   const cornerShift = AVATAR_SIZE / 2 - CORNER_NEAR_AVATAR;
+  const S = useMemo(() => makeStyles(C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift), [C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift]);
 
-  // Styles (no inline in JSX)
-  const S = useMemo(
-    () => makeStyles(C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift),
-    [C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift]
-  );
-
-  // List/Scroll
   const listRef = useRef(null);
   const scrollToBottom = (animated = true) => {
     requestAnimationFrame(() => {
@@ -347,26 +225,23 @@ export default function ChatScreen({ navigation }) {
     });
   };
 
-  // Chats
+  /* ── Chats (list, selection, rename, delete) ── */
   const [chats, setChats] = useState([]);
   const [selectedChatId, setSelectedChatId] = useState(null);
+  const selectedChatIdRef = useRef(null);
+  useEffect(() => { selectedChatIdRef.current = selectedChatId; }, [selectedChatId]);
+
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const selectedChatIdRef = useRef(null);
-  useEffect(() => {
-    selectedChatIdRef.current = selectedChatId;
-  }, [selectedChatId]);
 
-  // Popup / Rename
   const [menuFor, setMenuFor] = useState(null);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
 
-  // Persist Guard
   const persistSuspendedRef = useRef(false);
 
-  // Web autosize
+  /* ── Web-only textarea auto height ── */
   const webRef = useRef(null);
   const adjustWebHeight = () => {
     if (Platform.OS !== "web") return;
@@ -378,66 +253,83 @@ export default function ChatScreen({ navigation }) {
     el.style.overflowY = next >= MAX_H ? "auto" : "hidden";
     setInputHeight(next);
   };
-  useEffect(() => {
-    if (Platform.OS === "web") adjustWebHeight();
-  }, []);
+  useEffect(() => { if (Platform.OS === "web") adjustWebHeight(); }, []);
 
-  // Ensure active chat
-  const ensureActiveChat = async () => {
-    if (!user) return { id: null, created: false };
-    const currentId = selectedChatIdRef.current;
-    if (currentId && chats.some((c) => String(c.id) === String(currentId))) {
-      return { id: currentId, created: false };
-    }
-    if (chats.length > 0) {
-      const id = String(chats[0].id);
-      setSelectedChatId(id);
-      return { id, created: false };
-    }
+  /* ── Attachment ── */
+  const [attachment, setAttachment] = useState(null);
+  const pickAttachment = async () => {
     try {
-      const created = await createChat({
-        userId: user?.id || user?._id,
-        chatHeader: "แชตใหม่",
+      const res = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true, type: SUPPORTED_MIME });
+      if (res.canceled) return;
+
+      const f = res.assets?.[0];
+      if (!f) return;
+
+      const { name, size: sizeFromPicker, mimeType, uri } = f;
+      const mime = mimeType || inferMimeFromName(name);
+      const okType = SUPPORTED_MIME.some((m) => (m.endsWith("/*") ? mime.startsWith(m.replace("/*", "")) : m === mime));
+      if (!okType) return notify("ไม่รองรับไฟล์", "แนบได้เฉพาะไฟล์ข้อความ (.txt, .md, .csv, .json, .xml)");
+
+      let size = typeof sizeFromPicker === "number" ? sizeFromPicker : null;
+      try {
+        if (Platform.OS === "web") {
+          const blob = await (await fetch(uri)).blob();
+          if (!size) size = blob.size;
+        } else {
+          const FileSystem = require("expo-file-system");
+          const info = await FileSystem.getInfoAsync(uri, { size: true });
+          if (!size) size = typeof info.size === "number" ? info.size : null;
+        }
+      } catch { }
+
+      if (!size || size <= 0) return notify("ไฟล์ว่าง", "ไฟล์ที่เลือกมีขนาด 0 ไบต์");
+      if (size > MAX_ATTACHMENT_BYTES) {
+        const kb = (size / 1024).toFixed(0);
+        const limitKb = (MAX_ATTACHMENT_BYTES / 1024).toFixed(0);
+        return notify("ไฟล์ใหญ่เกินไป", `ขนาด ${kb}KB เกินลิมิต ${limitKb}KB — ไม่สามารถแนบได้`);
+      }
+
+      let text = "";
+      if (Platform.OS === "web") {
+        text = await new Promise((resolve, reject) => {
+          fetch(uri)
+            .then((r) => r.blob())
+            .then((blob) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result || "");
+              reader.onerror = reject;
+              reader.readAsText(blob);
+            })
+            .catch(reject);
+        });
+      } else {
+        const FileSystem = require("expo-file-system");
+        text = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.UTF8 });
+      }
+      if (!text || !String(text).trim()) return notify("ไฟล์ว่าง", "ไม่พบเนื้อหาในไฟล์ที่เลือก");
+
+      const attachTextTrim = String(text).trim();
+      const previewFullQuestion = buildFullQuestion(inputText, name, attachTextTrim);
+      const projectedBytes = estimatePayloadBytes({
+        chatId: user ? selectedChatIdRef.current : undefined,
+        question: previewFullQuestion,
+        dbSaveHint: { fileName: name, fileText: attachTextTrim },
       });
-      const newChatId = String(created?.chatId ?? created?.id);
-      const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
-      setChats([item]);
-      setSelectedChatId(newChatId);
-      return { id: newChatId, created: true };
+      if (projectedBytes > FRONTEND_BODY_LIMIT_BYTES) {
+        const mb = (projectedBytes / 1024 / 1024).toFixed(2);
+        const mbLimit = (FRONTEND_BODY_LIMIT_BYTES / 1024 / 1024).toFixed(2);
+        return notify("ข้อความรวมใหญ่เกินไป", `ประมาณ ${mb}MB > ${mbLimit}MB — ลดขนาดไฟล์หรือข้อความก่อนแนบ`);
+      }
+
+      setAttachment({ name, size, mime, text: String(text) });
     } catch (e) {
-      console.error("ensureActiveChat create error:", e);
-      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
-      return { id: null, created: false };
+      console.warn("pickAttachment error:", e);
+      notify("ผิดพลาด", "เลือกไฟล์ไม่สำเร็จ");
     }
   };
+  const removeAttachment = () => setAttachment(null);
 
-  // Sidebar / Popup helpers
-  const openItemMenu = (id, x, y) => {
-    setMenuFor(id);
-    setMenuPos({ x, y });
-  };
-  const closeItemMenu = () => setMenuFor(null);
-  const getPopupStyle = () => {
-    const { width, height } = Dimensions.get("window");
-    const MW = 200,
-      MH = 160,
-      PAD = 10;
-    return {
-      left: Math.min(menuPos.x, width - MW - PAD),
-      top: Math.min(menuPos.y, height - MH - PAD),
-      width: MW,
-    };
-  };
-  const toggleSidebar = () => {
-    const toOpen = !sidebarOpen;
-    Animated.timing(sidebarAnim, {
-      toValue: toOpen ? 0 : -260,
-      duration: 260,
-      useNativeDriver: false,
-    }).start(() => setSidebarOpen(toOpen));
-  };
-
-  // Pending bubbles
+  /* ── Pending bubble helpers ── */
   const pendingBubbleId = (taskId) => `pending-${taskId}`;
   const makePendingBubble = (taskId) => ({
     id: taskId ? pendingBubbleId(taskId) : "pending-generic",
@@ -448,9 +340,7 @@ export default function ChatScreen({ navigation }) {
   });
   const addPendingBotBubble = (taskId) => {
     const id = taskId ? pendingBubbleId(taskId) : "pending-generic";
-    setMessages((prev) =>
-      prev.some((m) => m.id === id) ? prev : [...prev, makePendingBubble(taskId)]
-    );
+    setMessages((prev) => (prev.some((m) => m.id === id) ? prev : [...prev, makePendingBubble(taskId)]));
   };
   const removePendingBotBubble = (taskId) => {
     setMessages((prev) => {
@@ -465,9 +355,7 @@ export default function ChatScreen({ navigation }) {
   const upgradePendingBubble = (taskId) => {
     if (!taskId) return;
     setMessages((prev) => {
-      const genIdx = prev.findIndex(
-        (m) => m.pending === true && m.id === "pending-generic"
-      );
+      const genIdx = prev.findIndex((m) => m.pending === true && m.id === "pending-generic");
       if (genIdx === -1) return prev;
       const copy = [...prev];
       copy.splice(genIdx, 1, { ...prev[genIdx], id: `pending-${taskId}` });
@@ -475,14 +363,11 @@ export default function ChatScreen({ navigation }) {
     });
   };
 
-  // WS handlers
+  /* ── WS streaming result → replace pending bubble ── */
   useEffect(() => {
     const doneHandler = (payload) => {
-      const matchesTask =
-        !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
-      const matchesChat =
-        !!payload?.chatId &&
-        String(payload.chatId) === String(selectedChatIdRef.current);
+      const matchesTask = !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
+      const matchesChat = !!payload?.chatId && String(payload.chatId) === String(selectedChatIdRef.current);
       if (!matchesTask && !matchesChat) return;
       hardResetPendingState();
     };
@@ -494,19 +379,13 @@ export default function ChatScreen({ navigation }) {
     const taskId = currentTaskIdRef.current;
     if (!taskId) return;
     const handler = (msgObj) => {
-      const matchesTask =
-        !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
-      const matchesChat =
-        !!msgObj?.chatId &&
-        String(msgObj.chatId) === String(selectedChatIdRef.current);
+      const matchesTask = !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
+      const matchesChat = !!msgObj?.chatId && String(msgObj.chatId) === String(selectedChatIdRef.current);
       let accept = matchesTask || matchesChat;
       if (!accept && awaitingRef.current) accept = true;
       if (!accept) return;
 
-      const finalText =
-        typeof msgObj === "string"
-          ? msgObj
-          : msgObj?.text ?? JSON.stringify(msgObj);
+      const finalText = typeof msgObj === "string" ? msgObj : msgObj?.text ?? JSON.stringify(msgObj);
 
       if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
         setCurrentTaskId(msgObj.taskId);
@@ -518,13 +397,7 @@ export default function ChatScreen({ navigation }) {
         const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
         let idx = prev.findIndex((m) => m.id === pendId);
         if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
-
-        const newMsg = {
-          id: Date.now().toString(),
-          from: "bot",
-          text: finalText,
-          time: formatTS(Date.now()),
-        };
+        const newMsg = { id: Date.now().toString(), from: "bot", text: finalText, time: formatTS(Date.now()) };
         if (idx >= 0) {
           const copy = [...prev];
           copy.splice(idx, 1, newMsg);
@@ -535,82 +408,92 @@ export default function ChatScreen({ navigation }) {
         setTimeout(() => scrollToBottom(true), 0);
         return next;
       });
-
+      setMessages((prev) => prev.map((m) => (m.id === pendingUserMsgId && m.from === "user" ? { ...m, pendingClient: false } : m)));
       hardResetPendingState();
       const chatId2 = selectedChatIdRef.current;
-      if (chatId2) {
-        storage.setItem(
-          STORAGE_PREFIX + String(chatId2),
-          JSON.stringify({ sending: false, savedAt: Date.now() })
-        );
-      }
+      if (chatId2) storage.setItem(STORAGE_PREFIX + String(chatId2), JSON.stringify({ sending: false, savedAt: Date.now() }));
     };
     const unsubscribe = subscribeTask(taskId, handler);
     return () => unsubscribe?.();
   }, [subscribeTask, currentTaskId]);
 
-  // ============================== Pending Poll helpers ==============================
+  /* ── Polling (fallback heartbeat & status) ── */
   const pollTimerRef = useRef(null);
   const heartbeatRef = useRef(null);
   const unmountedRef = useRef(false);
-
-  useEffect(() => {
-    return () => {
-      unmountedRef.current = true;
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
-    };
+  useEffect(() => () => {
+    unmountedRef.current = true;
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
   }, []);
-
   const stopPendingPoll = () => {
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-    if (heartbeatRef.current) {
-      clearInterval(heartbeatRef.current);
-      heartbeatRef.current = null;
-    }
+    if (pollTimerRef.current) { clearTimeout(pollTimerRef.current); pollTimerRef.current = null; }
+    if (heartbeatRef.current) { clearInterval(heartbeatRef.current); heartbeatRef.current = null; }
   };
-
   const startHeartbeat = (chatId) => {
     if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     heartbeatRef.current = setInterval(async () => {
       if (!chatId) return;
       const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
       const s = raw ? JSON.parse(raw) : {};
-      await storage.setItem(
-        STORAGE_PREFIX + String(chatId),
-        JSON.stringify({ ...s, savedAt: Date.now() })
-      );
+      await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ ...s, savedAt: Date.now() }));
     }, 10_000);
   };
 
-  const startPendingPoll = ({
-    chatId,
-    taskId,
-    pendingQnaId,
-    pendingUserMsgId,
-    pendingUserMsg,
-    initialDelay = 1200,
-  }) => {
+  // เริ่ม polling ตรวจสถานะ และจัดการ error เคสหลัก
+  const startPendingPoll = ({ chatId, taskId, pendingQnaId, pendingUserMsgId, pendingUserMsg, initialDelay = 1200 }) => {
     stopPendingPoll();
     startHeartbeat(chatId);
+
+    const postErrorBubble = (text) => {
+      const now = Date.now();
+      setMessages((prev) => [
+        ...prev.filter((m) => !(m.pending === true && m.from === "bot")),
+        { id: String(now), from: "bot", text, time: formatTS(now) },
+      ]);
+      setTimeout(() => scrollToBottom(true), 0);
+    };
+
+    const handleFailureAndCancel = async (userMsgIdToClear, errTextForUser) => {
+      try {
+        try { await saveAnswer({ taskId, chatId, qNaWords: errTextForUser }); } catch (eSave) { console.warn("saveAnswer failed:", eSave?.message || eSave); }
+        removePendingBotBubble(taskId);
+        if (userMsgIdToClear) setMessages((prev) => prev.map((m) => (m.id === userMsgIdToClear ? { ...m, pendingClient: false } : m)));
+        postErrorBubble(errTextForUser);
+        await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now(), cancelledAt: Date.now() }));
+      } finally {
+        hardResetPendingState({ keepCancelled: true });
+        stopPendingPoll();
+      }
+    };
 
     const poll = async (delay) => {
       if (unmountedRef.current) return;
       pollTimerRef.current = setTimeout(async () => {
         try {
           const st = await checkStatus(taskId);
-          const state =
-            st?.state || st?.responseData?.state || st?.data?.state || null;
+          const rawErrMsg = st?.error || st?.responseData?.error || st?.data?.error || "";
+          if (rawErrMsg) {
+            const msg = String(rawErrMsg || "");
+            if (/task\s+not\s+found/i.test(msg) || /not\s+found/i.test(msg)) {
+              notify("เกิดข้อผิดพลาด", "ระบบจะยกเลิกคำขอนี้ให้อัตโนมัติ");
+              await handleFailureAndCancel(pendingUserMsgId, "เกิดข้อผิดพลาดในการประมวลผลจากเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง");
+              return;
+            }
+            notify("งานล้มเหลว", msg.split("\n").slice(0, 8).join("\n") || "เกิดข้อผิดพลาดในการประมวลผล");
+            await handleFailureAndCancel(pendingUserMsgId, "เกิดข้อผิดพลาดในการประมวลผลจากเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง");
+            return;
+          }
 
-          if (state === "running" || state === "queued") {
-            const nextDelay = Math.min(
-              3000,
-              Math.max(1000, Math.floor(delay * 1.2))
-            );
+          const state = st?.state || st?.responseData?.state || st?.data?.state || null;
+          const status = st?.status || st?.responseData?.status || st?.data?.status || null;
 
+          const isRunning = ["running", "queued"].includes(state) || ["running", "queued"].includes(status);
+          const isError = ["error", "failed"].includes(state) || ["error", "failed"].includes(status);
+          const isDone = state === "done" || status === "done";
+
+          if (isRunning) {
+            const nextDelay = Math.min(3000, Math.max(1000, Math.floor(delay * 1.2)));
             await storage.setItem(
               STORAGE_PREFIX + String(chatId),
               JSON.stringify({
@@ -623,39 +506,19 @@ export default function ChatScreen({ navigation }) {
                 savedAt: Date.now(),
               })
             );
-
             upgradePendingBubble(taskId);
             poll(nextDelay);
             return;
           }
 
-          if (state === "failed" || state === "error") {
-            const errText = "เกิดข้อผิดพลาดในการประมวลผลจากเซิร์ฟเวอร์";
-            try {
-              await saveAnswer({ taskId, chatId, qNaWords: errText });
-            } catch (eSave) {
-              console.warn("saveAnswer failed:", eSave?.message || eSave);
-            }
-            removePendingBotBubble(taskId);
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `ans-error-${Date.now()}`,
-                from: "bot",
-                text: errText,
-                time: formatTS(Date.now()),
-              },
-            ]);
-            hardResetPendingState();
-            stopPendingPoll();
+          if (isError) {
+            notify("งานล้มเหลว", "เกิดข้อผิดพลาดในการประมวลผล");
+            await handleFailureAndCancel(pendingUserMsgId, "เกิดข้อผิดพลาดในการประมวลผลจากเซิร์ฟเวอร์");
             return;
           }
 
-          if (state === "done") {
-            await storage.setItem(
-              STORAGE_PREFIX + String(chatId),
-              JSON.stringify({ sending: false, savedAt: Date.now() })
-            );
+          if (isDone) {
+            await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
             stopPendingPoll();
             return;
           }
@@ -671,38 +534,63 @@ export default function ChatScreen({ navigation }) {
     poll(initialDelay);
   };
 
-  // Load chats/history
+  /* ── Load chats & history ── */
+  const ensureActiveChat = async () => {
+    if (!user) return { id: null, created: false };
+    const currentId = selectedChatIdRef.current;
+    if (currentId && chats.some((c) => String(c.id) === String(currentId))) return { id: currentId, created: false };
+    if (chats.length > 0) {
+      const id = String(chats[0].id);
+      setSelectedChatId(id);
+      return { id, created: false };
+    }
+    try {
+      const created = await createChat({ userId: user?.id || user?._id, chatHeader: "แชตใหม่" });
+      const newChatId = String(created?.chatId ?? created?.id);
+      const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
+      setChats([item]);
+      setSelectedChatId(newChatId);
+      return { id: newChatId, created: true };
+    } catch (e) {
+      console.error("ensureActiveChat create error:", e);
+      notify("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+      return { id: null, created: false };
+    }
+  };
+
+  const openItemMenu = (id, x, y) => { setMenuFor(id); setMenuPos({ x, y }); };
+  const closeItemMenu = () => setMenuFor(null);
+  const getPopupStyle = () => {
+    const { width, height } = Dimensions.get("window");
+    const MW = 200, MH = 160, PAD = 10;
+    return { left: Math.min(menuPos.x, width - MW - PAD), top: Math.min(menuPos.y, height - MH - PAD), width: MW };
+  };
+  const toggleSidebar = () => {
+    const toOpen = !sidebarOpen;
+    Animated.timing(sidebarAnim, { toValue: toOpen ? 0 : -260, duration: 260, useNativeDriver: false }).start(() => setSidebarOpen(toOpen));
+  };
+
   const loadUserChats = async () => {
     if (!user?.id && !user?._id) return;
     setLoadingChats(true);
     const lastSelectedId = await storage.getItem(LAST_CHAT_ID_KEY);
     try {
       const list = await getUserChats(user.id || user._id);
-      const mapped = (list || []).map((c) => ({
-        id: String(c.chatId ?? c.id),
-        title: c.chatHeader || "แชต",
-      }));
+      const mapped = (list || []).map((c) => ({ id: String(c.chatId ?? c.id), title: c.chatHeader || "แชต" }));
       setChats(mapped);
 
       if (mapped.length === 0) {
-        const created = await createChat({
-          userId: user.id || user._id,
-          chatHeader: "แชตใหม่",
-        });
+        const created = await createChat({ userId: user.id || user._id, chatHeader: "แชตใหม่" });
         const newChatId = String(created?.chatId ?? created?.id);
         setChats([{ id: newChatId, title: created?.chatHeader || "แชตใหม่" }]);
         setSelectedChatId(newChatId);
       } else {
-        const lastIsValid =
-          !!lastSelectedId &&
-          mapped.some((c) => String(c.id) === String(lastSelectedId));
-        setSelectedChatId(
-          lastIsValid ? String(lastSelectedId) : String(mapped[0].id)
-        );
+        const lastIsValid = !!lastSelectedId && mapped.some((c) => String(c.id) === String(lastSelectedId));
+        setSelectedChatId(lastIsValid ? String(lastSelectedId) : String(mapped[0].id));
       }
     } catch (err) {
       console.error("loadUserChats error:", err);
-      Alert.alert("ผิดพลาด", "ไม่สามารถโหลดรายชื่อแชตได้");
+      notify("ผิดพลาด", "ไม่สามารถโหลดรายชื่อแชตได้");
     } finally {
       setLoadingChats(false);
     }
@@ -722,21 +610,14 @@ export default function ChatScreen({ navigation }) {
 
     try {
       const rows = await getChatQna(chatId);
-      const sorted = (rows || [])
-        .slice()
-        .sort(
-          (a, b) =>
-            toTS(a && (a.createdAt || a.createAt)) -
-            toTS(b && (b.createdAt || b.createAt))
-        );
+      const sorted = (rows || []).slice().sort((a, b) => toTS(a?.createdAt || a?.createAt) - toTS(b?.createdAt || b?.createAt));
 
       const historyMsgs = sorted.map((r, idx) => {
-        const tsNum = toTS((r && (r.createdAt || r.createAt)) || Date.now());
+        const tsNum = toTS(r?.createdAt || r?.createAt || Date.now());
         return {
-          id: String((r && r.qNaId) || idx),
-          from: r && r.qNaType === "Q" ? "user" : "bot",
-          // แสดงเฉพาะคำถาม + ชื่อไฟล์ (ถ้ามี)
-          text: toDisplayQuestionOnly(r && r.qNaWords),
+          id: String(r?.qNaId || idx),
+          from: r?.qNaType === "Q" ? "user" : "bot",
+          text: toDisplayQuestionOnly(r?.qNaWords),
           time: formatTS(tsNum),
           tsNum,
         };
@@ -746,28 +627,28 @@ export default function ChatScreen({ navigation }) {
 
       const rawSaved = await storage.getItem(STORAGE_PREFIX + String(chatId));
       if (rawSaved) {
-        const saved = JSON.parse(rawSaved || "{}");
+        const saved = JSON.parse(rawSaved || {});
+        if (saved?.cancelledAt) {
+          await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
+          nextMsgs = nextMsgs.filter((m) => !(m.pending === true || (m.from === "user" && m.pendingClient)));
+          setMessages(nextMsgs);
+          setSending(false);
+          setShowStop(false);
+          setCurrentTaskId(null);
+          setPendingQnaId(null);
+          setPendingUserMsgId(null);
+          setLoadingHistory(false);
+          persistSuspendedRef.current = false;
+          setTimeout(() => scrollToBottom(false), 0);
+          return;
+        }
 
-        if (saved && saved.sending) {
+        if (saved?.sending) {
           const savedPendingMsg = saved.pendingUserMsg || null;
-          const savedPendingTs =
-            toTS(savedPendingMsg && savedPendingMsg.time) ||
-            toTS(saved.pendingUserMsgTs) ||
-            toTS(saved.savedAt);
-
+          const savedPendingTs = toTS(savedPendingMsg?.time) || toTS(saved.pendingUserMsgTs) || toTS(saved.savedAt);
           const TEXT_NORM = (s) => (s || "").trim();
-
-          const hasSameUserQRecorded =
-            !!savedPendingMsg &&
-            historyMsgs.some(
-              (m) =>
-                m.from === "user" &&
-                TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
-            );
-
-          const hasBotAfterPending = historyMsgs.some(
-            (m) => m.from === "bot" && (m.tsNum || 0) >= (savedPendingTs || 0)
-          );
+          const hasSameUserQRecorded = !!savedPendingMsg && historyMsgs.some((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
+          const hasBotAfterPending = historyMsgs.some((m) => m.from === "bot" && (m.tsNum || 0) >= (savedPendingTs || 0));
 
           setSending(true);
           setShowStop(false);
@@ -775,10 +656,7 @@ export default function ChatScreen({ navigation }) {
           stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
 
           if (hasBotAfterPending) {
-            await storage.setItem(
-              STORAGE_PREFIX + String(chatId),
-              JSON.stringify({ sending: false, savedAt: Date.now() })
-            );
+            await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
             setSending(false);
             setShowStop(false);
             setCurrentTaskId(null);
@@ -789,53 +667,31 @@ export default function ChatScreen({ navigation }) {
             const qId = saved.pendingQnaId || null;
 
             if (!nextMsgs.some((m) => m.pending === true)) {
-              nextMsgs.push({
-                id: "pending-generic",
-                from: "bot",
-                pending: true,
-                text: "กำลังประมวลผล...",
-                time: formatTS(Date.now()),
-                tsNum: Date.now(),
-              });
+              nextMsgs.push({ id: "pending-generic", from: "bot", pending: true, text: "กำลังประมวลผล...", time: formatTS(Date.now()), tsNum: Date.now(), pendingClient: true });
             }
 
             if (taskId) {
-              const hasSameUserQInNext =
-                !!savedPendingMsg &&
-                nextMsgs.some(
-                  (m) =>
-                    m.from === "user" &&
-                    TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
-                );
+              const hasSameUserQInNext = !!savedPendingMsg && nextMsgs.some((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
               if (savedPendingMsg && !hasSameUserQInNext) {
-                nextMsgs.push({
-                  id: savedPendingMsg.id,
-                  from: "user",
-                  text: toDisplayQuestionOnly(savedPendingMsg.text),
-                  time: savedPendingMsg.time,
-                  tsNum: toTS(savedPendingMsg.time) || Date.now(),
-                });
+                nextMsgs.push({ id: savedPendingMsg.id, from: "user", text: toDisplayQuestionOnly(savedPendingMsg.text), time: savedPendingMsg.time, tsNum: toTS(savedPendingMsg.time) || Date.now(), pendingClient: true });
+              } else if (savedPendingMsg && hasSameUserQInNext) {
+                const idx = nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
+                if (idx >= 0) { nextMsgs[idx] = { ...nextMsgs[idx], pendingClient: true }; setPendingUserMsgId(nextMsgs[idx].id); }
               }
 
               const pendId = "pending-" + String(taskId);
               if (!nextMsgs.some((m) => m.id === pendId)) {
-                const genIdx = nextMsgs.findIndex(
-                  (m) => m.id === "pending-generic"
-                );
+                const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
                 if (genIdx >= 0) nextMsgs.splice(genIdx, 1);
-                nextMsgs.push({
-                  id: pendId,
-                  from: "bot",
-                  pending: true,
-                  text: "กำลังประมวลผล...",
-                  time: formatTS(Date.now()),
-                  tsNum: Date.now(),
-                });
+                nextMsgs.push({ id: pendId, from: "bot", pending: true, text: "กำลังประมวลผล...", time: formatTS(Date.now()), tsNum: Date.now() });
               }
 
               setCurrentTaskId(taskId);
               setPendingQnaId(qId || null);
-              setPendingUserMsgId(saved.pendingUserMsgId || null);
+              const recordedIdx = savedPendingMsg
+                ? nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text))
+                : -1;
+              setPendingUserMsgId(recordedIdx >= 0 ? nextMsgs[recordedIdx].id : saved?.pendingUserMsgId || savedPendingMsg?.id || null);
 
               await storage.setItem(
                 STORAGE_PREFIX + String(chatId),
@@ -843,46 +699,26 @@ export default function ChatScreen({ navigation }) {
                   sending: true,
                   currentTaskId: taskId,
                   pendingQnaId: qId || null,
-                  pendingUserMsgId: saved.pendingUserMsgId || null,
+                  pendingUserMsgId: recordedIdx >= 0 ? nextMsgs[recordedIdx].id : saved?.pendingUserMsgId || savedPendingMsg?.id || null,
                   pendingUserMsg: savedPendingMsg || null,
                   pendingUserMsgTs: savedPendingTs || Date.now(),
                   savedAt: Date.now(),
                 })
               );
 
-              startPendingPoll({
-                chatId,
-                taskId,
-                pendingQnaId: qId || null,
-                pendingUserMsgId: saved.pendingUserMsgId || null,
-                pendingUserMsg: savedPendingMsg || null,
-              });
+              startPendingPoll({ chatId, taskId, pendingQnaId: qId || null, pendingUserMsgId: saved.pendingUserMsgId || null, pendingUserMsg: savedPendingMsg || null });
             } else {
               if (savedPendingMsg && !hasBotAfterPending && !hasSameUserQRecorded) {
                 try {
                   if (!nextMsgs.some((m) => m.id === saved.pendingUserMsgId)) {
-                    nextMsgs.push({
-                      id: savedPendingMsg.id,
-                      from: "user",
-                      text: toDisplayQuestionOnly(savedPendingMsg.text),
-                      time:
-                        savedPendingMsg.time ||
-                        formatTS(savedPendingTs || Date.now()),
-                      tsNum: savedPendingTs || Date.now(),
-                    });
+                    nextMsgs.push({ id: savedPendingMsg.id, from: "user", text: toDisplayQuestionOnly(savedPendingMsg.text), time: savedPendingMsg.time || formatTS(savedPendingTs || Date.now()), tsNum: savedPendingTs || Date.now(), pendingClient: true });
+                  } else {
+                    const idx = nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
+                    if (idx >= 0) { nextMsgs[idx] = { ...nextMsgs[idx], pendingClient: true }; setPendingUserMsgId(nextMsgs[idx].id); }
                   }
 
-                  const resp2 = await askQuestion({
-                    chatId,
-                    question: toDisplayQuestionOnly(savedPendingMsg.text),
-                    // ไม่ส่ง dbSaveHint ซ้ำใน flow กู้คืน
-                  });
-                  const newTaskId =
-                    resp2?.taskId ||
-                    resp2?.id ||
-                    resp2?.data?.taskId ||
-                    resp2?.data?.id ||
-                    null;
+                  const resp2 = await askQuestion({ chatId, question: toDisplayQuestionOnly(savedPendingMsg.text) });
+                  const newTaskId = resp2?.taskId || resp2?.id || resp2?.data?.taskId || resp2?.data?.id || null;
                   const newQId =
                     resp2?.qNaId ||
                     resp2?.data?.qNaId ||
@@ -894,20 +730,15 @@ export default function ChatScreen({ navigation }) {
                   setCurrentTaskId(newTaskId);
                   setPendingQnaId(newQId);
 
-                  const genIdx = nextMsgs.findIndex(
-                    (m) => m.id === "pending-generic"
-                  );
+                  const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
                   if (newTaskId && genIdx >= 0) nextMsgs.splice(genIdx, 1);
                   if (newTaskId) {
-                    nextMsgs.push({
-                      id: `pending-${newTaskId}`,
-                      from: "bot",
-                      pending: true,
-                      text: "กำลังประมวลผล...",
-                      time: formatTS(Date.now()),
-                      tsNum: Date.now(),
-                    });
+                    nextMsgs.push({ id: `pending-${newTaskId}`, from: "bot", pending: true, text: "กำลังประมวลผล...", time: formatTS(Date.now()), tsNum: Date.now() });
                   }
+
+                  const recordedIdx = savedPendingMsg
+                    ? nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text))
+                    : -1;
 
                   await storage.setItem(
                     STORAGE_PREFIX + String(chatId),
@@ -915,7 +746,7 @@ export default function ChatScreen({ navigation }) {
                       sending: true,
                       currentTaskId: newTaskId,
                       pendingQnaId: newQId,
-                      pendingUserMsgId: saved.pendingUserMsgId,
+                      pendingUserMsgId: recordedIdx >= 0 ? nextMsgs[recordedIdx].id : saved?.pendingUserMsgId || savedPendingMsg?.id,
                       pendingUserMsg: savedPendingMsg,
                       pendingUserMsgTs: savedPendingTs,
                       savedAt: Date.now(),
@@ -923,22 +754,13 @@ export default function ChatScreen({ navigation }) {
                   );
 
                   if (newTaskId) {
-                    startPendingPoll({
-                      chatId,
-                      taskId: newTaskId,
-                      pendingQnaId: newQId || null,
-                      pendingUserMsgId: saved.pendingUserMsgId || null,
-                      pendingUserMsg: savedPendingMsg || null,
-                    });
+                    startPendingPoll({ chatId, taskId: newTaskId, pendingQnaId: newQId || null, pendingUserMsgId: saved.pendingUserMsgId || null, pendingUserMsg: savedPendingMsg || null });
                   }
                 } catch (eReask) {
                   console.warn("Re-ask failed:", eReask?.message || eReask);
                 }
               } else {
-                await storage.setItem(
-                  STORAGE_PREFIX + String(chatId),
-                  JSON.stringify({ sending: false, savedAt: Date.now() })
-                );
+                await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
                 setSending(false);
                 setShowStop(false);
                 setCurrentTaskId(null);
@@ -955,7 +777,7 @@ export default function ChatScreen({ navigation }) {
       setTimeout(() => scrollToBottom(false), 0);
     } catch (err) {
       console.error("loadHistory error:", err);
-      Alert.alert("ผิดพลาด", "ไม่สามารถโหลดประวัติแชตได้");
+      notify("ผิดพลาด", "ไม่สามารถโหลดประวัติแชตได้");
       setMessages([]);
     } finally {
       setLoadingHistory(false);
@@ -963,25 +785,11 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  useEffect(() => {
-    if (selectedChatId)
-      storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId));
-  }, [selectedChatId]);
+  useEffect(() => { if (selectedChatId) storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId)); }, [selectedChatId]);
+  useEffect(() => { if (!user) { setChats([]); setSelectedChatId(null); setMessages([]); return; } loadUserChats(); }, [user]);
+  useEffect(() => { if (selectedChatId) loadHistory(selectedChatId); }, [selectedChatId]);
 
-  useEffect(() => {
-    if (!user) {
-      setChats([]);
-      setSelectedChatId(null);
-      setMessages([]);
-      return;
-    }
-    loadUserChats();
-  }, [user]);
-
-  useEffect(() => {
-    if (selectedChatId) loadHistory(selectedChatId);
-  }, [selectedChatId]);
-
+  // persist session state of pending task
   useEffect(() => {
     (async () => {
       if (!selectedChatId || persistSuspendedRef.current) return;
@@ -990,59 +798,50 @@ export default function ChatScreen({ navigation }) {
         currentTaskId,
         pendingQnaId,
         pendingUserMsgId,
-        pendingUserMsg:
-          pendingUserMsgId &&
-          messages.find((m) => m.id === pendingUserMsgId && m.from === "user"),
+        pendingUserMsg: pendingUserMsgId && messages.find((m) => m.id === pendingUserMsgId && m.from === "user"),
         pendingUserMsgTs: Date.now(),
         savedAt: Date.now(),
       };
-      await storage.setItem(
-        STORAGE_PREFIX + String(selectedChatId),
-        JSON.stringify(data)
-      );
+      await storage.setItem(STORAGE_PREFIX + String(selectedChatId), JSON.stringify(data));
     })();
-  }, [
-    sending,
-    currentTaskId,
-    pendingQnaId,
-    pendingUserMsgId,
-    selectedChatId,
-    messages,
-  ]);
+  }, [sending, currentTaskId, pendingQnaId, pendingUserMsgId, selectedChatId, messages]);
 
-  useFocusEffect(
-    useCallback(() => {
-      (async () => {
-        const chatId = selectedChatIdRef.current;
-        if (!chatId) return;
-        const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
-        if (!raw) return;
-        const saved = JSON.parse(raw);
-        if (saved?.sending) {
-          const TTL_MS = 30 * 1000;
-          if (!saved.savedAt || Date.now() - saved.savedAt > TTL_MS) {
-            await storage.setItem(
-              STORAGE_PREFIX + String(chatId),
-              JSON.stringify({ sending: false, savedAt: Date.now() })
-            );
-            setSending(false);
-            setShowStop(false);
-            setCurrentTaskId(null);
-            setPendingQnaId(null);
-            setPendingUserMsgId(null);
-            removePendingBotBubble(null);
-          }
+  // clear expired pending when refocused
+  useFocusEffect(useCallback(() => {
+    (async () => {
+      const chatId = selectedChatIdRef.current;
+      if (!chatId) return;
+      const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+
+      if (saved?.cancelledAt) {
+        await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
+        setSending(false);
+        setShowStop(false);
+        setCurrentTaskId(null);
+        setPendingQnaId(null);
+        setPendingUserMsgId(null);
+        removePendingBotBubble(null);
+        setMessages((prev) => prev.filter((m) => !(m.pending === true || (m.from === "user" && m.pendingClient))));
+        return;
+      }
+
+      if (saved?.sending) {
+        const TTL_MS = 30 * 1000;
+        if (!saved.savedAt || Date.now() - saved.savedAt > TTL_MS) {
+          await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
+          setSending(false);
+          setShowStop(false);
+          setCurrentTaskId(null);
+          setPendingQnaId(null);
+          setPendingUserMsgId(null);
+          removePendingBotBubble(null);
+          setMessages((prev) => prev.filter((m) => !(m.pending === true || (m.from === "user" && m.pendingClient))));
         }
-      })();
-    }, [])
-  );
-
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    const handleBeforeUnload = () => { };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, []);
+      }
+    })();
+  }, []));
 
   useEffect(() => {
     scrollToBottom(true);
@@ -1050,19 +849,11 @@ export default function ChatScreen({ navigation }) {
     return () => clearTimeout(t);
   }, [messages.length, sending, currentTaskId]);
 
+  /* ── Chat room ops ── */
   const addNewChat = async () => {
-    if (!user) {
-      Alert.alert(
-        "โหมดไม่บันทึก",
-        "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ"
-      );
-      return;
-    }
+    if (!user) return notify("โหมดไม่บันทึก", "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ");
     try {
-      const created = await createChat({
-        userId: user?.id || user?._id,
-        chatHeader: "แชตใหม่",
-      });
+      const created = await createChat({ userId: user?.id || user?._id, chatHeader: "แชตใหม่" });
       const newChatId = String(created?.chatId ?? created?.id);
       const item = { id: newChatId, title: created?.chatHeader || "แชตใหม่" };
       setChats((prev) => [item, ...prev]);
@@ -1071,21 +862,11 @@ export default function ChatScreen({ navigation }) {
       setTimeout(() => scrollToBottom(false), 0);
     } catch (err) {
       console.error("createChat error:", err);
-      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+      notify("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
     }
   };
 
-  const confirmDelete = () => {
-    if (Platform.OS === "web")
-      return Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?"));
-    return new Promise((resolve) => {
-      Alert.alert("ยืนยัน", "ต้องการลบแชตนี้หรือไม่?", [
-        { text: "ยกเลิก", style: "cancel", onPress: () => resolve(false) },
-        { text: "ลบ", style: "destructive", onPress: () => resolve(true) },
-      ]);
-    });
-  };
-
+  const confirmDelete = () => (Platform.OS === "web" ? Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?")) : Promise.resolve(false));
   const handleLogout = async () => {
     try {
       await logout();
@@ -1118,7 +899,7 @@ export default function ChatScreen({ navigation }) {
       }
     } catch (err) {
       console.error("deleteChat error:", err);
-      Alert.alert("ผิดพลาด", "ลบแชตไม่สำเร็จ");
+      notify("ผิดพลาด", "ลบแชตไม่สำเร็จ");
     }
   };
 
@@ -1128,70 +909,52 @@ export default function ChatScreen({ navigation }) {
     setEditingText(current?.title || "");
     closeItemMenu();
   };
-  const cancelRenameInline = () => {
-    setEditingId(null);
-    setEditingText("");
-  };
+  const cancelRenameInline = () => { setEditingId(null); setEditingText(""); };
   const confirmRenameInline = async () => {
     const id = editingId;
     const title = (editingText || "").trim();
     if (!id) return;
-    if (!title) return Alert.alert("กรุณาระบุชื่อแชต");
+    if (!title) return notify("กรุณาระบุชื่อแชต");
     try {
       await apiEditChat(id, { chatHeader: title });
-      setChats((prev) =>
-        prev.map((c) => (String(c.id) === String(id) ? { ...c, title } : c))
-      );
+      setChats((prev) => prev.map((c) => (String(c.id) === String(id) ? { ...c, title } : c)));
       setEditingId(null);
       setEditingText("");
     } catch (e) {
       console.error("rename chat error:", e);
-      Alert.alert("ผิดพลาด", "แก้ไขชื่อแชตไม่สำเร็จ");
+      notify("ผิดพลาด", "แก้ไขชื่อแชตไม่สำเร็จ");
     }
   };
 
+  /* ── Send / Cancel ── */
+  const firingRef = useRef(false);
   const triggerSend = async () => {
     if (firingRef.current || sending) return;
     firingRef.current = true;
-    try {
-      await sendMessage();
-    } finally {
-      firingRef.current = false;
-    }
+    try { await sendMessage(); } finally { firingRef.current = false; }
   };
 
-  // ---------------------- ส่งข้อความ / แนบไฟล์ ----------------------
   const sendMessage = async () => {
     const rawText = (inputText || "").trim();
-    const attachText = (attachment?.text || "").trim();
+    const attachTextTrim = (attachment?.text ?? "").trim();
     const hasText = rawText.length > 0;
-    const hasAttach = attachText.length > 0;
+    const hasAttach = attachTextTrim.length > 0;
 
-    if (!hasText && !hasAttach) {
-      Alert.alert("แจ้งเตือน", "กรุณาพิมพ์ข้อความหรือแนบไฟล์ก่อนส่ง");
+    if (attachment && !hasAttach) { notify("ไฟล์ว่าง", "ไฟล์ที่แนบไม่มีเนื้อหา กรุณาเลือกไฟล์ใหม่"); setAttachment(null); return; }
+    if (!hasText && !hasAttach) return notify("แจ้งเตือน", "กรุณาพิมพ์ข้อความหรือแนบไฟล์ก่อนส่ง");
+
+    const uiMessage = hasText && hasAttach ? `${rawText}\n\n(ไฟล์แนบ: ${attachment.name})` : hasText ? rawText : `(ไฟล์แนบ: ${attachment.name})`;
+    const fullQuestion = buildFullQuestion(rawText, attachment?.name, attachTextTrim);
+    const dbSaveHint = hasAttach ? { fileName: attachment.name, fileText: attachTextTrim } : undefined;
+
+    const projectedBytes = estimatePayloadBytes({ chatId: user ? selectedChatIdRef.current : undefined, question: fullQuestion, ...(dbSaveHint ? { dbSaveHint } : {}) });
+    if (projectedBytes > FRONTEND_BODY_LIMIT_BYTES) {
+      const mb = (projectedBytes / 1024 / 1024).toFixed(2);
+      const mbLimit = (FRONTEND_BODY_LIMIT_BYTES / 1024 / 1024).toFixed(2);
+      notify("ข้อความรวมใหญ่เกินไป", `ประมาณ ${mb}MB > ${mbLimit}MB — ลดขนาดข้อความหรือไฟล์ก่อนส่ง`);
+      setAttachment(null);
       return;
     }
-
-    // ข้อความที่ใช้ "แสดงบนจอ" (ไม่มีเนื้อหาไฟล์ยาว)
-    const uiMessage =
-      hasText && hasAttach
-        ? `${rawText}\n\n(ไฟล์แนบ: ${attachment.name})`
-        : hasText
-          ? rawText
-          : `(ไฟล์แนบ: ${attachment.name})`;
-
-    // const apiQuestion = hasAttach ? attachText : rawText;
-    const fullQuestion = hasAttach
-      ? (hasText
-        ? `${rawText}\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachment.name}):\n${attachText}`
-        : `(ไฟล์แนบ: ${attachment.name})\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachment.name}):\n${attachText}`)
-      : rawText;
-
-
-    // สำหรับฝั่งบันทึก DB: แนบเนื้อหาไฟล์จริงใน dbSaveHint
-    const dbSaveHint = hasAttach
-      ? { fileName: attachment.name, fileText: attachText }
-      : undefined;
 
     let chatIdToUse = null;
     let createdNewRoom = false;
@@ -1201,31 +964,17 @@ export default function ChatScreen({ navigation }) {
       chatIdToUse = res?.id ? String(res.id) : null;
       createdNewRoom = !!res?.created;
       if (!chatIdToUse) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: String(Date.now() + 1),
-            from: "bot",
-            text: "ไม่สามารถเตรียมห้องแชตได้ กรุณาลองอีกครั้ง",
-            time: formatTS(Date.now()),
-          },
-        ]);
+        setMessages((prev) => [...prev, { id: String(Date.now() + 1), from: "bot", text: "ไม่สามารถเตรียมห้องแชตได้ กรุณาลองอีกครั้ง", time: formatTS(Date.now()) }]);
         return;
       }
     }
 
     const now = Date.now();
-    const userMsg = {
-      id: String(now),
-      from: "user",
-      text: uiMessage,
-      time: formatTS(now),
-    };
+    const userMsg = { id: String(now), from: "user", text: uiMessage, time: formatTS(now), pendingClient: true };
 
-    // แสดงก่อน + เคลียร์ช่อง/ไฟล์แนบ
     setInputText("");
     setInputHeight(MIN_H);
-    setAttachment(null); // เคลียร์ไฟล์แนบหลังส่ง
+    setAttachment(null);
     setPendingUserMsgId(userMsg.id);
     setMessages((prev) => [...prev, userMsg]);
     scrollToBottom(true);
@@ -1253,16 +1002,9 @@ export default function ChatScreen({ navigation }) {
     }
 
     try {
-      const resp = await askQuestion({
-        chatId: user ? chatIdToUse : undefined,
-        question: fullQuestion,
-        dbSaveHint, // << เนื้อหาไฟล์จริงจะไปกับค่านี้
-      });
-
-      const taskId =
-        resp?.taskId || resp?.id || resp?.data?.taskId || resp?.data?.id || null;
+      const resp = await askQuestion({ chatId: user ? chatIdToUse : undefined, question: fullQuestion, dbSaveHint });
+      const taskId = resp?.taskId || resp?.id || resp?.data?.taskId || resp?.data?.id || null;
       setCurrentTaskId(taskId);
-
       const qId =
         resp?.qNaId ||
         resp?.data?.qNaId ||
@@ -1300,13 +1042,9 @@ export default function ChatScreen({ navigation }) {
       removePendingBotBubble(null);
       setMessages((prev) => [
         ...prev,
-        {
-          id: String(Date.now() + 1),
-          from: "bot",
-          text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์",
-          time: formatTS(Date.now()),
-        },
+        { id: String(Date.now() + 1), from: "bot", text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์", time: formatTS(Date.now()) },
       ]);
+      setMessages((prev) => prev.map((m) => (m.id === pendingUserMsgId && m.from === "user" ? { ...m, pendingClient: false } : m)));
       hardResetPendingState();
     }
   };
@@ -1315,25 +1053,38 @@ export default function ChatScreen({ navigation }) {
     try {
       if (currentTaskId) {
         try {
-          await cancelAsk(currentTaskId, {
-            qNaId: pendingQnaId || null,
-            chatId: selectedChatIdRef.current || null,
-          });
-        } catch (e) {
-          console.warn("cancelAsk error:", e?.message || e);
-        }
+          await cancelAsk(currentTaskId, { qNaId: pendingQnaId || null, chatId: selectedChatIdRef.current || null });
+        } catch (e) { console.warn("cancelAsk error:", e?.message || e); }
       }
-      if (pendingUserMsgId) {
-        setMessages((prev) => prev.filter((m) => m.id !== pendingUserMsgId));
-      }
+      setMessages((prev) => {
+        const id = pendingUserMsgId;
+        return prev.filter((m) => {
+          if (id && m.id === id) return false;
+          if (m.from === "user" && m.pendingClient) return false;
+          return true;
+        });
+      });
       if (currentTaskId) removePendingBotBubble(currentTaskId);
       else removePendingBotBubble(null);
+
+      const chatId = selectedChatIdRef.current;
+      if (chatId) {
+        const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
+        const old = raw ? JSON.parse(raw) : {};
+        await storage.setItem(
+          STORAGE_PREFIX + String(chatId),
+          JSON.stringify({ ...old, sending: false, cancelledAt: Date.now(), savedAt: Date.now() })
+        );
+      }
     } finally {
-      hardResetPendingState();
+      hardResetPendingState({ keepCancelled: true, dropUserPending: true });
     }
   };
 
-  const hardResetPendingState = () => {
+  const hardResetPendingState = async (opts = {}) => {
+    const keepCancelled = !!opts.keepCancelled;
+    const dropUserPending = !!opts.dropUserPending;
+
     setSending(false);
     setShowStop(false);
     setCurrentTaskId(null);
@@ -1341,127 +1092,67 @@ export default function ChatScreen({ navigation }) {
     setPendingUserMsgId(null);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     stopPendingPoll();
+
     const chatId = selectedChatIdRef.current;
-    if (chatId)
-      storage.setItem(
+    if (chatId) {
+      const raw = await storage.getItem(STORAGE_PREFIX + String(chatId));
+      const old = raw ? JSON.parse(raw) : {};
+      await storage.setItem(
         STORAGE_PREFIX + String(chatId),
-        JSON.stringify({ sending: false, savedAt: Date.now() })
+        JSON.stringify({ ...old, sending: false, savedAt: Date.now(), ...(keepCancelled ? { cancelledAt: old?.cancelledAt ?? Date.now() } : { cancelledAt: undefined }) })
       );
+    }
+
+    setMessages((prev) => {
+      let next = prev.filter((m) => !(m.pending === true && m.from === "bot"));
+      next = next
+        .map((m) => (m.from === "user" && m.pendingClient ? (dropUserPending ? null : { ...m, pendingClient: false }) : m))
+        .filter(Boolean);
+      return next;
+    });
   };
 
-  // Speech To Text
+  /* ── Voice (web only) ── */
   const [recording, setRecording] = useState(false);
   const webRecRef = useRef(null);
-
-  useEffect(() => {
-    if (Platform.OS === "web") return;
-    const onSpeechStart = () => setRecording(true);
-    const onSpeechEnd = () => setRecording(false);
-    const onSpeechError = (e) => {
-      setRecording(false);
-      Alert.alert("ไมโครโฟน", "ไม่สามารถใช้งานไมโครโฟนได้");
-    };
-    const onSpeechResults = (e) => {
-      const txt = e?.value?.[0] || "";
-      if (txt) setInputText((prev) => (prev ? prev + " " + txt : txt));
-    };
-    Voice.onSpeechStart = onSpeechStart;
-    Voice.onSpeechEnd = onSpeechEnd;
-    Voice.onSpeechError = onSpeechError;
-    Voice.onSpeechResults = onSpeechResults;
-    return () => {
-      Voice.destroy().then(() => Voice.removeAllListeners());
-    };
-  }, []);
-
-  const ensureAndroidMicPermission = async () => {
-    if (Platform.OS !== "android") return true;
-    try {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
-      );
-      return granted === PermissionsAndroid.RESULTS.GRANTED;
-    } catch (e) {
-      return false;
-    }
-  };
-
   const getWebRecognizer = () => {
     if (Platform.OS !== "web") return null;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     return SR ? new SR() : null;
   };
-
   const startVoice = async () => {
-    if (Platform.OS === "web") {
-      const rec = getWebRecognizer();
-      if (!rec) {
-        Alert.alert("ไม่รองรับ", "เบราว์เซอร์นี้ไม่รองรับพิมพ์ด้วยเสียง");
-        return;
-      }
-      webRecRef.current = rec;
-      rec.lang = "th-TH";
-      rec.interimResults = false;
-      rec.continuous = false;
-      rec.onstart = () => setRecording(true);
-      rec.onerror = () => setRecording(false);
-      rec.onend = () => setRecording(false);
-      rec.onresult = (e) => {
-        const txt = e?.results?.[0]?.[0]?.transcript || "";
-        if (txt) setInputText((prev) => (prev ? prev + " " + txt : txt));
-      };
-      try {
-        rec.start();
-      } catch { }
-      return;
-    }
-    const ok = await ensureAndroidMicPermission();
-    if (!ok) {
-      Alert.alert("ต้องการสิทธิ์", "กรุณาอนุญาตไมโครโฟนเพื่อใช้พิมพ์ด้วยเสียง");
-      return;
-    }
-    try {
-      await Voice.destroy();
-      await Voice.start("th-TH");
-    } catch (e) {
-      Alert.alert("ไมโครโฟน", "เริ่มพิมพ์ด้วยเสียงไม่สำเร็จ");
-      setRecording(false);
-    }
+    const rec = getWebRecognizer();
+    if (!rec) return notify("ไม่รองรับ", "เบราว์เซอร์นี้ไม่รองรับพิมพ์ด้วยเสียง");
+    webRecRef.current = rec;
+    rec.lang = "th-TH";
+    rec.interimResults = false;
+    rec.continuous = false;
+    rec.onstart = () => setRecording(true);
+    rec.onerror = () => setRecording(false);
+    rec.onend = () => setRecording(false);
+    rec.onresult = (e) => {
+      const txt = e?.results?.[0]?.[0]?.transcript || "";
+      if (txt) setInputText((prev) => (prev ? prev + " " + txt : txt));
+    };
+    try { rec.start(); } catch { }
   };
+  const stopVoice = async () => { try { webRecRef.current?.stop?.(); } catch { } setRecording(false); };
 
-  const stopVoice = async () => {
-    if (Platform.OS === "web") {
-      try {
-        webRecRef.current?.stop?.();
-      } catch { }
-      setRecording(false);
-      return;
-    }
-    try {
-      await Voice.stop();
-    } catch { }
-    setRecording(false);
-  };
-
-  // Render message item
+  /* ── Render message row ── */
   const renderItem = ({ item }) => {
     const isUser = item.from === "user";
     const isPending = item.pending === true;
-
     return (
       <View style={[S.msgRow, isUser ? S.rowR : S.rowL]}>
         <View style={S.avatarWrap}>
           <Image source={isUser ? userAvatar : botAvatar} style={S.avatarImg} resizeMode="cover" />
         </View>
-
         <View>
           <View style={[S.messageWrapper, isUser ? S.bubbleUser : S.bubbleBot]}>
             {isPending ? (
               <View style={S.pendingRow}>
                 <ActivityIndicator color={isDark ? "#fff" : "#000"} />
-                <Text style={isUser ? S.bubbleUserText : S.bubbleBotText}>
-                  กำลังประมวลผล...
-                </Text>
+                <Text style={isUser ? S.bubbleUserText : S.bubbleBotText}>กำลังประมวลผล...</Text>
               </View>
             ) : (
               <Markdown
@@ -1477,16 +1168,7 @@ export default function ChatScreen({ navigation }) {
               </Markdown>
             )}
           </View>
-
-          <Text
-            style={[
-              S.timeText,
-              isUser ? S.alignRight : S.alignLeft,
-              isUser ? S.timeUser : S.timeBot,
-            ]}
-          >
-            {item.time}
-          </Text>
+          <Text style={[S.timeText, isUser ? S.alignRight : S.alignLeft, isUser ? S.timeUser : S.timeBot]}>{item.time}</Text>
         </View>
       </View>
     );
@@ -1497,40 +1179,21 @@ export default function ChatScreen({ navigation }) {
   const canSend = !sending && (hasText || hasAttach);
   const listContentPadBottom = 16 + (attachment ? 56 : 0);
 
-  // UI
+  /* ── UI ── */
   return (
-    <SafeAreaView
-      style={[
-        S.container,
-        S.containerBg,
-        Platform.OS !== "web" ? S.withStatusBarPad : null,
-      ]}
-    >
+    <SafeAreaView style={[S.container, S.containerBg, Platform.OS !== "web" ? S.withStatusBarPad : null]}>
       {/* Sidebar */}
-      <Animated.View
-        style={[
-          S.sidebar,
-          { left: sidebarAnim },
-          S.sidebarBg,
-          S.sidebarBorderRight,
-        ]}
-      >
+      <Animated.View style={[S.sidebar, { left: sidebarAnim }, S.sidebarBg, S.sidebarBorderRight]}>
         <View style={S.sidebarHeader}>
-          <Text style={[S.sidebarTitle, S.sidebarTitleColor]}>
-            {user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}
-          </Text>
+          <Text style={[S.sidebarTitle, S.sidebarTitleColor]}>{user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}</Text>
           <View style={S.rowCenter}>
-            <TouchableOpacity onPress={toggleSidebar} style={S.padLeft8}>
-              <Icon name="close" size={22} color="#333" />
-            </TouchableOpacity>
+            <TouchableOpacity onPress={toggleSidebar} style={S.padLeft8}><Icon name="close" size={22} color="#333" /></TouchableOpacity>
           </View>
         </View>
 
         {user ? (
           loadingChats ? (
-            <View style={S.padV10}>
-              <ActivityIndicator />
-            </View>
+            <View style={S.padV10}><ActivityIndicator /></View>
           ) : (
             chats.map((chat) => {
               const isEditing = String(editingId) === String(chat.id);
@@ -1551,49 +1214,31 @@ export default function ChatScreen({ navigation }) {
                         value={editingText}
                         onChangeText={setEditingText}
                         placeholder="ชื่อแชต"
+                        placeholderTextColor="#9AA2AF"
                         style={[S.renameInlineInput, S.renameInlineInputTheme]}
                         autoFocus
-                        onSubmitEditing={confirmRenameInline}
                         returnKeyType="done"
+                        blurOnSubmit
+                        onSubmitEditing={confirmRenameInline}
                       />
                       <View style={S.renameInlineBtns}>
-                        <TouchableOpacity onPress={confirmRenameInline} style={S.inlineIconBtn}>
-                          <Icon name="checkmark" size={18} color="#2ecc71" />
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={cancelRenameInline} style={S.inlineIconBtn}>
-                          <Icon name="close" size={18} color="#e74c3c" />
-                        </TouchableOpacity>
+                        <TouchableOpacity onPress={confirmRenameInline} style={S.inlineIconBtn}><Icon name="checkmark" size={18} color="#2ecc71" /></TouchableOpacity>
+                        <TouchableOpacity onPress={cancelRenameInline} style={S.inlineIconBtn}><Icon name="close" size={18} color="#e74c3c" /></TouchableOpacity>
                       </View>
                     </View>
                   ) : (
                     <>
                       <TouchableOpacity
                         style={S.flex1Min0}
-                        onPress={() => {
-                          setSelectedChatId(String(chat.id));
-                          closeItemMenu();
-                        }}
+                        onPress={() => { setSelectedChatId(String(chat.id)); closeItemMenu(); }}
                       >
-                        <Text
-                          numberOfLines={1}
-                          style={[
-                            S.sidebarItemText,
-                            S.sidebarTextColor,
-                            isActive ? S.bold700 : null,
-                          ]}
-                        >
+                        <Text numberOfLines={1} style={[S.sidebarItemText, S.sidebarTextColor, isActive ? S.bold700 : null]}>
                           {chat.title}
                         </Text>
                       </TouchableOpacity>
 
                       <Pressable
-                        onPress={(e) =>
-                          openItemMenu(
-                            chat.id,
-                            e?.nativeEvent?.pageX ?? 0,
-                            e?.nativeEvent?.pageY ?? 0
-                          )
-                        }
+                        onPress={(e) => openItemMenu(chat.id, e?.nativeEvent?.pageX ?? 0, e?.nativeEvent?.pageY ?? 0)}
                         style={S.dotButton}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
@@ -1606,9 +1251,7 @@ export default function ChatScreen({ navigation }) {
             })
           )
         ) : (
-          <Text style={S.guestTextInfo}>
-            เข้าสู่ระบบเพื่อสร้างห้องและบันทึกประวัติการสนทนา
-          </Text>
+          <Text style={S.guestTextInfo}>เข้าสู่ระบบเพื่อสร้างห้องและบันทึกประวัติการสนทนา</Text>
         )}
 
         {user && (
@@ -1620,21 +1263,13 @@ export default function ChatScreen({ navigation }) {
         )}
       </Animated.View>
 
-      {sidebarOpen && (
-        <TouchableOpacity
-          style={[S.backdrop, S.overlay]}
-          activeOpacity={1}
-          onPress={toggleSidebar}
-        />
-      )}
+      {sidebarOpen && <TouchableOpacity style={[S.backdrop, S.overlay]} activeOpacity={1} onPress={toggleSidebar} />}
 
       {/* Header */}
       <View style={[S.header, S.headerBg]}>
         <View style={S.headerSideLeft}>
           <View style={S.rowGap10}>
-            <TouchableOpacity onPress={toggleSidebar}>
-              <Icon name="menu" size={24} color={C.headerText} />
-            </TouchableOpacity>
+            <TouchableOpacity onPress={toggleSidebar}><Icon name="menu" size={24} color={C.headerText} /></TouchableOpacity>
             <Image source={buddhadhamBG} style={S.logo} />
           </View>
         </View>
@@ -1659,27 +1294,19 @@ export default function ChatScreen({ navigation }) {
                 </Text>
               </View>
               <TouchableOpacity onPress={handleLogout}>
-                <View style={S.logoutButton}>
-                  <Text style={[S.logoutText, S.headerText]}>ออกจากระบบ</Text>
-                </View>
+                <View style={S.logoutButton}><Text style={[S.logoutText, S.headerText]}>ออกจากระบบ</Text></View>
               </TouchableOpacity>
             </View>
           ) : (
             <TouchableOpacity onPress={() => navigation.navigate("Login")}>
-              <View style={[S.loginButton, S.chipBg]}>
-                <Text style={[S.loginText, S.chipText]}>ลงชื่อเข้าใช้</Text>
-              </View>
+              <View style={[S.loginButton, S.chipBg]}><Text style={[S.loginText, S.chipText]}>ลงชื่อเข้าใช้</Text></View>
             </TouchableOpacity>
           )}
         </View>
       </View>
 
-      {/* Body + Input */}
-      <KeyboardAvoidingView
-        style={S.flex1}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
-      >
+      {/* Body */}
+      <KeyboardAvoidingView style={S.flex1}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <View style={[S.background, S.containerBg, S.flex1]}>
             <Image source={buddhadhamBG} style={S.bgWatermark} />
@@ -1687,9 +1314,7 @@ export default function ChatScreen({ navigation }) {
             {user && loadingHistory ? (
               <View style={S.loadingWrap}>
                 <ActivityIndicator />
-                <Text style={isDark ? S.loadingTextDark : S.loadingTextLight}>
-                  กำลังโหลดประวัติ...
-                </Text>
+                <Text style={isDark ? S.loadingTextDark : S.loadingTextLight}>กำลังโหลดประวัติ...</Text>
               </View>
             ) : (
               <FlatList
@@ -1706,74 +1331,34 @@ export default function ChatScreen({ navigation }) {
               />
             )}
 
-            {/* ชิปชื่อไฟล์แนบ (ลอยเหนือแถบอินพุต) */}
             {!!attachment && (
               <View style={[S.attachmentFloat, { bottom: inputBarH + 8 }]}>
                 <Icon name="document-text" size={14} color={C.attachmentIcon} />
-                <Text numberOfLines={1} style={[S.attachmentText, S.attachmentText]}>
-                  {attachment.name}
-                </Text>
+                <Text numberOfLines={1} style={[S.attachmentText, S.attachmentText]}>{attachment.name}</Text>
                 <TouchableOpacity onPress={removeAttachment} style={S.attachmentCloseBtn}>
                   <Icon name="close" size={14} color={C.attachmentIcon} />
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* Input Bar */}
-            <View
-              style={[S.inputContainerFixed, S.inputBarTheme]}
-              onLayout={(e) => setInputBarH(e.nativeEvent.layout.height || 0)}
-            >
-              {Platform.OS === "web" ? (
-                <textarea
-                  ref={webRef}
-                  value={inputText}
-                  placeholder="พิมพ์ข้อความ..."
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      if (canSend) triggerSend();
-                    }
-                  }}
-                  disabled={sending}
-                  style={S.webTextArea}
-                  onInput={adjustWebHeight}
-                />
-              ) : (
-                <TextInput
-                  style={S.input}
-                  value={inputText}
-                  placeholder="พิมพ์ข้อความ..."
-                  editable={!sending}
-                  multiline
-                  blurOnSubmit={false}
-                  returnKeyType="send"
-                  enablesReturnKeyAutomatically
-                  onChangeText={setInputText}
-                  onContentSizeChange={(e) => {
-                    const h = e.nativeEvent.contentSize?.height ?? MIN_H;
-                    setInputHeight((prev) => {
-                      const next = clampH(h);
-                      return next === prev ? prev : next;
-                    });
-                  }}
-                  onKeyPress={(e) => {
-                    if (e.nativeEvent.key === "Enter") {
-                      setInputText((prev) => prev.replace("\n", ""));
-                      if (!sending && canSend) {
-                        sendMessage();
-                      }
-                    }
-                  }}
-                  onSubmitEditing={() => {
+            {/* Input bar */}
+            <View style={[S.inputContainerFixed, S.inputBarTheme]} onLayout={(e) => setInputBarH(e.nativeEvent.layout.height || 0)}>
+              <textarea
+                ref={webRef}
+                value={inputText}
+                placeholder="พิมพ์ข้อความ..."
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
                     if (canSend) triggerSend();
-                  }}
-                  scrollEnabled={inputHeight >= MAX_H}
-                />
-              )}
+                  }
+                }}
+                disabled={sending}
+                style={S.webTextArea}
+                onInput={adjustWebHeight}
+              />
 
-              {/* ปุ่มแนบไฟล์ */}
               <TouchableOpacity
                 onPress={pickAttachment}
                 activeOpacity={0.85}
@@ -1785,15 +1370,10 @@ export default function ChatScreen({ navigation }) {
                 <Icon name="attach" size={20} color="#fff" />
               </TouchableOpacity>
 
-              {/* ปุ่มไมค์ */}
               <TouchableOpacity
                 onPress={recording ? stopVoice : startVoice}
                 activeOpacity={0.85}
-                style={[
-                  S.actionButton,
-                  recording ? S.actionBtnCancel : S.actionBtnSend,
-                  S.mr8,
-                ]}
+                style={[S.actionButton, recording ? S.actionBtnCancel : S.actionBtnSend, S.mr8]}
                 accessibilityRole="button"
                 accessibilityLabel={recording ? "หยุดพิมพ์ด้วยเสียง" : "พิมพ์ด้วยเสียง"}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -1801,7 +1381,6 @@ export default function ChatScreen({ navigation }) {
                 <Icon name={recording ? "mic-off" : "mic"} size={20} color="#fff" />
               </TouchableOpacity>
 
-              {/* ปุ่มส่ง */}
               {sending ? (
                 <TouchableOpacity
                   onPress={showStop ? cancelSending : undefined}
@@ -1812,24 +1391,14 @@ export default function ChatScreen({ navigation }) {
                   accessibilityLabel={showStop ? "ยกเลิกการส่ง" : "กำลังส่ง..."}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  {showStop ? (
-                    <Icon name="stop" size={20} color="#fff" />
-                  ) : (
-                    <ActivityIndicator color="#fff" />
-                  )}
+                  {showStop ? <Icon name="stop" size={20} color="#fff" /> : <ActivityIndicator color="#fff" />}
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
-                  onPress={() => {
-                    if (canSend) triggerSend();
-                  }}
+                  onPress={() => { if (canSend) triggerSend(); }}
                   disabled={!canSend}
                   activeOpacity={0.85}
-                  style={[
-                    S.actionButton,
-                    S.actionBtnSend,
-                    !canSend ? S.disabled06 : null,
-                  ]}
+                  style={[S.actionButton, S.actionBtnSend, !canSend ? S.disabled06 : null]}
                   accessibilityRole="button"
                   accessibilityLabel="ส่งข้อความ"
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -1842,38 +1411,17 @@ export default function ChatScreen({ navigation }) {
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
 
-      {/* Popup Menu */}
-      <Modal
-        transparent
-        visible={!!menuFor}
-        animationType="fade"
-        onRequestClose={closeItemMenu}
-      >
+      {/* Popup menu */}
+      <Modal transparent visible={!!menuFor} animationType="fade" onRequestClose={closeItemMenu}>
         <TouchableOpacity style={S.popupBackdrop} activeOpacity={1} onPress={closeItemMenu} />
         <View style={[S.popupMenu, getPopupStyle()]}>
           <View style={S.popupArrow} />
-          <TouchableOpacity
-            style={S.popupItem}
-            onPress={() => {
-              const id = menuFor;
-              if (!id) return;
-              startRenameInline(id);
-              closeItemMenu();
-            }}
-          >
+          <TouchableOpacity style={S.popupItem} onPress={() => { const id = menuFor; if (!id) return; startRenameInline(id); closeItemMenu(); }}>
             <Text>แก้ไขชื่อแชต</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={S.popupItem}
-            onPress={() => {
-              closeItemMenu();
-              if (menuFor) deleteChat(menuFor);
-            }}
-          >
+          <TouchableOpacity style={S.popupItem} onPress={() => { closeItemMenu(); if (menuFor) deleteChat(menuFor); }}>
             <Text style={S.dangerText}>ลบแชตนี้</Text>
           </TouchableOpacity>
-
           <TouchableOpacity style={S.popupItem} onPress={closeItemMenu}>
             <Text>ยกเลิก</Text>
           </TouchableOpacity>
@@ -1883,33 +1431,19 @@ export default function ChatScreen({ navigation }) {
   );
 }
 
-// ============================== Styles (Factory) ==============================
-const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
-  return StyleSheet.create({
-    // Layout & containers
+/* ─────────────────────────── Styles ─────────────────────────── */
+const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
+  StyleSheet.create({
     container: { flex: 1 },
     withStatusBarPad: { paddingTop: StatusBar.currentHeight || 20 },
     containerBg: { backgroundColor: C.containerBg },
     flex1: { flex: 1 },
 
-    // Sidebar
-    sidebar: {
-      position: "absolute",
-      top: 0,
-      bottom: 0,
-      left: 0,
-      width: 260,
-      padding: 14,
-      zIndex: 5,
-    },
+    /* Sidebar */
+    sidebar: { position: "absolute", top: 0, bottom: 0, left: 0, width: 260, padding: 14, zIndex: 5 },
     sidebarBg: { backgroundColor: C.sidebarBg },
     sidebarBorderRight: { borderRightColor: C.divider, borderRightWidth: 1 },
-    sidebarHeader: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 10,
-    },
+    sidebarHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
     sidebarTitle: { fontWeight: "bold", fontSize: 16 },
     sidebarTitleColor: { color: C.sidebarText },
     padLeft8: { paddingLeft: 8 },
@@ -1918,13 +1452,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
     rowGap10: { flexDirection: "row", alignItems: "center", columnGap: 10 },
     rowGap6: { flexDirection: "row", alignItems: "center", columnGap: 6 },
 
-    sidebarItemRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      paddingVertical: 10,
-      borderBottomWidth: 1,
-    },
+    sidebarItemRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: 1 },
     sidebarItemBorder: { borderColor: C.divider },
     sidebarItemActiveDark: { backgroundColor: "#C9CCD3" },
     sidebarItemActiveLight: { backgroundColor: "#E6E9F0" },
@@ -1936,73 +1464,28 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
     sidebarButton: { padding: 10, borderRadius: 8, alignItems: "center", marginTop: 10 },
     sidebarBottom: { marginTop: "auto" },
 
-    // Backdrop
-    backdrop: {
-      position: "absolute",
-      top: 0,
-      bottom: 0,
-      left: 0,
-      right: 0,
-      zIndex: 4,
-    },
+    /* Overlay */
+    backdrop: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 4 },
     overlay: { backgroundColor: C.overlay },
 
-    // Header
-    header: {
-      height: 60,
-      paddingHorizontal: 12,
-      justifyContent: "center",
-      zIndex: 2,
-    },
+    /* Header */
+    header: { height: 60, paddingHorizontal: 12, justifyContent: "center", zIndex: 2 },
     headerBg: { backgroundColor: C.headerBg },
-    headerCenter: {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      alignItems: "center",
-    },
-    headerSideLeft: {
-      position: "absolute",
-      left: 10,
-      top: 0,
-      bottom: 0,
-      justifyContent: "center",
-    },
-    headerSideRight: {
-      position: "absolute",
-      right: 10,
-      top: 0,
-      bottom: 0,
-      height: "100%",            // ให้กล่องสูงเท่าหัวแถบ
-      justifyContent: "center",  // จัดกึ่งกลางแนวตั้ง
-      alignItems: "center",      // ไม่ให้ลอยขึ้น-ลง
-      flexDirection: "row",
-      columnGap: 8,
-    },
+    headerCenter: { position: "absolute", left: 0, right: 0, alignItems: "center" },
+    headerSideLeft: { position: "absolute", left: 10, top: 0, bottom: 0, justifyContent: "center" },
+    headerSideRight: { position: "absolute", right: 10, top: 0, bottom: 0, height: "100%", justifyContent: "center", alignItems: "center", flexDirection: "row", columnGap: 8 },
 
     headerTitle: { fontSize: 18, fontWeight: "bold", letterSpacing: 0.3 },
     headerText: { color: C.headerText },
 
-    // Theme chip
-    themeChip: {
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      borderRadius: 999,
-      backgroundColor: C.chipBg,
-    },
+    /* Chips */
+    themeChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: C.chipBg },
     themeChipText: { color: C.chipText, fontSize: 12 },
-
-    // Login / user
     loginButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
     loginText: { fontSize: 14 },
     chipBg: { backgroundColor: C.chipBg },
     chipText: { color: C.chipText },
-    userBadge: {
-      maxWidth: 160,
-      paddingHorizontal: 10,
-      paddingVertical: 5,
-      borderRadius: 10,
-    },
+    userBadge: { maxWidth: 160, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
     userNameText: { fontSize: 16 },
     logoutButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, backgroundColor: "transparent" },
     logoutText: { fontSize: 14 },
@@ -2010,7 +1493,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
     blackText: { color: "#111" },
     guestTextInfo: { color: "#555" },
 
-    // Background image
+    /* Background */
     background: { flex: 1 },
     bgWatermark: {
       position: "absolute",
@@ -2022,44 +1505,19 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
       tintColor: isDark ? "#000" : "#334155",
       resizeMode: "contain",
     },
-    logo: {
-      width: 34,
-      height: 34,
-      resizeMode: "contain",
-      tintColor: C.logoTint,
-    },
+    logo: { width: 34, height: 34, resizeMode: "contain", tintColor: C.logoTint },
 
-    // List
     footerExtraGap: { height: EXTRA_BOTTOM_GAP },
-    listContent: (padBottom) => ({
-      paddingTop: 12,
-      paddingBottom: padBottom,
-    }),
+    listContent: (padBottom) => ({ paddingTop: 12, paddingBottom: padBottom }),
 
-    // Message row
-    msgRow: {
-      flexDirection: "row",
-      alignItems: "flex-start",
-      gap: 10,
-      paddingHorizontal: 10,
-      marginVertical: 6,
-    },
+    /* Messages */
+    msgRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 10, marginVertical: 6 },
     rowR: { flexDirection: "row-reverse" },
     rowL: { flexDirection: "row" },
 
-    // Avatar
-    avatarWrap: {
-      width: AVATAR_SIZE,
-      height: AVATAR_SIZE,
-      borderRadius: AVATAR_SIZE / 2,
-      overflow: "hidden",
-      borderWidth: 2,
-      borderColor: C.avatarRing,
-      backgroundColor: "#fff",
-    },
+    avatarWrap: { width: AVATAR_SIZE, height: AVATAR_SIZE, borderRadius: AVATAR_SIZE / 2, overflow: "hidden", borderWidth: 2, borderColor: C.avatarRing, backgroundColor: "#fff" },
     avatarImg: { width: "100%", height: "100%" },
 
-    // Bubble
     messageWrapper: {
       paddingVertical: 10,
       paddingHorizontal: 12,
@@ -2074,106 +1532,38 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
       borderBottomLeftRadius: 16,
       borderBottomRightRadius: 16,
     },
-    bubbleUser: {
-      backgroundColor: C.bubbleUserBg,
-      alignSelf: "flex-end",
-      borderTopLeftRadius: 16,
-      borderTopRightRadius: 6,
-    },
-    bubbleBot: {
-      backgroundColor: C.bubbleBotBg,
-      alignSelf: "flex-start",
-      borderTopLeftRadius: 6,
-      borderTopRightRadius: 16,
-    },
+    bubbleUser: { backgroundColor: C.bubbleUserBg, alignSelf: "flex-end", borderTopLeftRadius: 16, borderTopRightRadius: 6 },
+    bubbleBot: { backgroundColor: C.bubbleBotBg, alignSelf: "flex-start", borderTopLeftRadius: 6, borderTopRightRadius: 16 },
     bubbleUserText: { color: C.bubbleUserText, fontSize: 16 },
     bubbleBotText: { color: C.bubbleBotText, fontSize: 16 },
 
     pendingRow: { flexDirection: "row", alignItems: "center", columnGap: 8 },
 
-    // Markdown (RNMDD styles must be objects)
-    mdBodyUser: {
-      fontSize: 16,
-      color: C.bubbleUserText,
-      lineHeight: 22,
-      ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}),
-    },
-    mdBodyBot: {
-      fontSize: 16,
-      color: C.bubbleBotText,
-      lineHeight: 22,
-      ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}),
-    },
+    /* Markdown */
+    mdBodyUser: { fontSize: 16, color: C.bubbleUserText, lineHeight: 22, ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}) },
+    mdBodyBot: { fontSize: 16, color: C.bubbleBotText, lineHeight: 22, ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}) },
     mdStrongUser: { color: C.bubbleUserText },
     mdStrongBot: { color: C.bubbleBotText },
     mdEmUser: { color: C.bubbleUserText },
     mdEmBot: { color: C.bubbleBotText },
-    mdCodeBlock: {
-      color: isDark ? "#fff" : "#0F172A",
-      backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
-      borderRadius: 8,
-      padding: 8,
-    },
-    mdBlockquote: {
-      color: isDark ? "#fff" : "#0F172A",
-      backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9",
-      fontStyle: "italic",
-      borderLeftWidth: 3,
-      borderLeftColor: isDark ? "#64748b" : "#c7d2fe",
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      borderRadius: 8,
-    },
+    mdCodeBlock: { color: isDark ? "#fff" : "#0F172A", backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9", borderRadius: 8, padding: 8 },
+    mdBlockquote: { color: isDark ? "#fff" : "#0F172A", backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9", fontStyle: "italic", borderLeftWidth: 3, borderLeftColor: isDark ? "#64748b" : "#c7d2fe", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
 
-    // Time text
     timeText: { fontSize: 10, color: C.timeText, marginHorizontal: 6, marginTop: 4, maxWidth: BUBBLE_MAX_W },
     alignRight: { alignSelf: "flex-end", textAlign: "right" },
     alignLeft: { alignSelf: "flex-start", textAlign: "left" },
     timeUser: {},
     timeBot: {},
 
-    // Loading
+    /* Loading */
     loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
     loadingTextDark: { color: "#ddd", marginTop: 8 },
     loadingTextLight: { color: "#333", marginTop: 8 },
 
-    // Input Bar
-    inputContainerFixed: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingHorizontal: 20,
-      paddingTop: 12,
-      paddingBottom: 12,
-      borderTopWidth: 1,
-      position: "relative",
-    },
-    inputBarTheme: {
-      backgroundColor: C.inputBarBg,
-      borderTopColor: C.border,
-    },
+    /* Input bar (web textarea used) */
+    inputContainerFixed: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12, borderTopWidth: 1, position: "relative" },
+    inputBarTheme: { backgroundColor: C.inputBarBg, borderTopColor: C.border },
 
-    // Native TextInput
-    input: {
-      flex: 1,
-      borderRadius: 22,
-      paddingHorizontal: 14,
-      fontSize: 16,
-      marginRight: 8,
-      minHeight: MIN_H,
-      height: inputHeight,
-      maxHeight: MAX_H,
-      textAlignVertical: "top",
-      lineHeight: LINE_H,
-      paddingTop: PAD_V_TOP,
-      paddingBottom: PAD_V_BOTTOM,
-      backgroundColor: C.inputBg,
-      borderColor: C.border,
-      borderWidth: 1,
-      color: "#111",
-      opacity: 1,
-    },
-
-    // Web textarea
     webTextArea: {
       flex: 1,
       marginRight: 8,
@@ -2196,12 +1586,11 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
       opacity: 1,
     },
 
-    // ชิปไฟล์แนบ (ลอย)
+    /* Attachment chip */
     attachmentFloat: {
       position: "absolute",
       left: 20,
       right: 120,
-      // bottom: ถูกกำหนดแบบไดนามิกจาก inputBarH + 8
       flexDirection: "row",
       alignItems: "center",
       paddingHorizontal: 10,
@@ -2217,29 +1606,11 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
       shadowRadius: 8,
       shadowOffset: { width: 0, height: 3 },
     },
-    attachmentText: {
-      marginLeft: 6,
-      flex: 1,
-      color: "#0F172A",
-      ...(Platform.OS === "web"
-        ? { whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }
-        : {}),
-    },
-
+    attachmentText: { marginLeft: 6, flex: 1, color: "#0F172A", ...(Platform.OS === "web" ? { whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" } : {}) },
     attachmentCloseBtn: { paddingHorizontal: 4, paddingVertical: 2 },
 
-    actionButton: {
-      flexDirection: "row",
-      alignItems: "center",
-      borderRadius: 9999,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      shadowColor: "#000",
-      shadowOpacity: 0.12,
-      shadowRadius: 8,
-      shadowOffset: { width: 0, height: 3 },
-      elevation: 6,
-    },
+    /* Buttons */
+    actionButton: { flexDirection: "row", alignItems: "center", borderRadius: 9999, paddingVertical: 10, paddingHorizontal: 14, shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 6 },
     attachBtn: { backgroundColor: C.sendBtn, marginRight: 8 },
     actionBtnSend: { backgroundColor: C.sendBtn },
     actionBtnCancel: { backgroundColor: C.cancelBtn },
@@ -2247,65 +1618,20 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) => {
     disabled06: { opacity: 0.6 },
     mr8: { marginRight: 8 },
 
-    // Popup
-    popupBackdrop: {
-      position: "absolute",
-      top: 0,
-      bottom: 0,
-      left: 0,
-      right: 0,
-      backgroundColor: "transparent",
-    },
-    popupMenu: {
-      position: "absolute",
-      backgroundColor: "#fff",
-      borderRadius: 12,
-      paddingVertical: 6,
-      shadowColor: "#000",
-      shadowOpacity: 0.15,
-      shadowRadius: 10,
-      shadowOffset: { width: 0, height: 6 },
-      elevation: 8,
-      zIndex: 1000,
-    },
-    popupArrow: {
-      position: "absolute",
-      top: -8,
-      left: 16,
-      width: 0,
-      height: 0,
-      borderLeftWidth: 8,
-      borderRightWidth: 8,
-      borderBottomWidth: 8,
-      borderLeftColor: "transparent",
-      borderRightColor: "transparent",
-      borderBottomColor: "#fff",
-    },
+    /* Popup */
+    popupBackdrop: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "transparent" },
+    popupMenu: { position: "absolute", backgroundColor: "#fff", borderRadius: 12, paddingVertical: 6, shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 8, zIndex: 1000 },
+    popupArrow: { position: "absolute", top: -8, left: 16, width: 0, height: 0, borderLeftWidth: 8, borderRightWidth: 8, borderBottomWidth: 8, borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: "#fff" },
     popupItem: { paddingVertical: 10, paddingHorizontal: 14 },
     dangerText: { color: "#e74c3c" },
 
-    // Rename inline
-    renameInlineRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      width: "100%",
-    },
-    renameInlineInput: {
-      flex: 1,
-      minWidth: 0,
-      borderWidth: 1,
-      borderRadius: 10,
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      fontSize: 14,
-    },
+    /* Inline rename */
+    renameInlineRow: { flexDirection: "row", alignItems: "center", gap: 6, width: "100%" },
+    renameInlineInput: { flex: 1, minWidth: 0, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, fontSize: 14 },
     renameInlineInputTheme: { borderColor: C.divider, backgroundColor: "#fff" },
     renameInlineBtns: { flexDirection: "row", alignItems: "center" },
     inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
 
-    // Text
     timeUserText: {},
     timeBotText: {},
   });
-};
