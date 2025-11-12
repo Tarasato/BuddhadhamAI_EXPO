@@ -1,17 +1,18 @@
 
 import client from "./client";
 
+/* =============== Auth: Register / Login =============== */
 export const registerApi = async ({ userName, userEmail, userPassword }) => {
   const res = await client.post("/", { userName, userEmail, userPassword });
   return res.data;
 };
-
 
 export const loginApi = async ({ userInput, userPassword }) => {
   const res = await client.post("/login", { userInput, userPassword });
   const raw = res.data; 
 
   
+  /* =============== Normalize User Data =============== */
   const u =
     raw?.user ??
     raw?.data?.user ??
@@ -21,9 +22,11 @@ export const loginApi = async ({ userInput, userPassword }) => {
     null;
 
  
+  /* =============== Extract Token =============== */
   const token =
     u?.token ?? raw?.token ?? raw?.accessToken ?? raw?.data?.token ?? null;
 
+  /* =============== Return Standardized Object =============== */
   return {
     message: raw?.message || "ok",
     user: {

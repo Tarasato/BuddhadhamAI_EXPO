@@ -31,7 +31,7 @@ const storage = {
 };
 
 export default function RegisterScreen({ navigation }) {
-  /* ------------ State ------------ */
+  /* =============== State =============== */
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [userPassword, setUserPassword] = useState("");
@@ -41,10 +41,10 @@ export default function RegisterScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  /* ------------ Theme ------------ */
+  /* =============== Theme =============== */
   const { isDark, toggleTheme, C } = useThemePreference("auth");
 
-  /* ------------ Derived / Validate ------------ */
+  /* =============== Derived / Validate =============== */
   const trimmed = useMemo(
     () => ({
       name: userName.trim(),
@@ -65,7 +65,7 @@ export default function RegisterScreen({ navigation }) {
     return "";
   };
 
-  /* ------------ Submit ------------ */
+  /* =============== Submit =============== */
   const handleRegister = async () => {
     if (loading) return;
     const v = validate();
@@ -88,7 +88,7 @@ export default function RegisterScreen({ navigation }) {
     }
   };
 
-  /* ------------ UI ------------ */
+  /* =============== UI =============== */
   return (
     <SafeAreaView
       style={[
@@ -97,7 +97,7 @@ export default function RegisterScreen({ navigation }) {
         Platform.OS !== "web" && { paddingTop: StatusBar.currentHeight || 20 },
       ]}
     >
-      {/* Back */}
+      {/* =============== Back ===============*/}
       <TouchableOpacity
         style={styles.backButton}
         onPress={() => navigation.navigate("Login")}
@@ -108,7 +108,7 @@ export default function RegisterScreen({ navigation }) {
         <Ionicons name="arrow-back" size={24} color={C.headerText} />
       </TouchableOpacity>
 
-      {/* Theme toggle */}
+      {/* =============== Theme toggle =============== */}
       <TouchableOpacity
         onPress={toggleTheme}
         style={[styles.themeToggle, { backgroundColor: C.chipBg, borderColor: C.border }]}

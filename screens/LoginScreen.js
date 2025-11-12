@@ -37,17 +37,17 @@ const storage = {
 export default function LoginScreen({ navigation }) {
   const { login } = useAuth();
 
-  /* ---------- Theme (UI only) ---------- */
+  /* =============== Theme (UI only) =============== */
   const { isDark, toggleTheme, C } = useThemePreference("auth");
 
 
-  /* ------------------- State ------------------- */
+  /* =============== State =============== */
   const [userInput, setUserInput] = useState("");
   const [userPassword, setUserPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  /* ------------------- Login ------------------- */
+  /* =============== Login =============== */
   const handleLogin = async () => {
     setError("");
     const userInputData = userInput.trim();
@@ -80,7 +80,7 @@ export default function LoginScreen({ navigation }) {
     }
   };
 
-  /* ------------------- UI ------------------- */
+  /* =============== UI =============== */
   return (
     <SafeAreaView
       style={[
@@ -89,7 +89,7 @@ export default function LoginScreen({ navigation }) {
         Platform.OS !== "web" && { paddingTop: StatusBar.currentHeight || 20 },
       ]}
     >
-      {/* Back */}
+      {/* =============== Back =============== */}
       <TouchableOpacity
         style={styles.backButton}
         onPress={() => navigation.navigate("Chat")}
@@ -98,7 +98,7 @@ export default function LoginScreen({ navigation }) {
         <Ionicons name="arrow-back" size={24} color={C.headerText} />
       </TouchableOpacity>
 
-      {/* Theme toggle */}
+      {/* =============== Theme toggle =============== */}
       <TouchableOpacity
         onPress={toggleTheme}
         style={[styles.themeToggle, { backgroundColor: C.chipBg, borderColor: C.border }]}

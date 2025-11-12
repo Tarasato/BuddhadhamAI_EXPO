@@ -1,8 +1,6 @@
 import { chatClient, qNaClient } from "./client";
 
-/* ========================================================
- * Helpers
- * ====================================================== */
+/* =============== Helper Functions =============== */
 const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -19,9 +17,7 @@ const TEMP_ERROR_SNIPPETS = [
   "Network Error",
 ];
 
-/* ========================================================
- * QnA: Ask Question
- * ====================================================== */
+/* =============== QnA: Ask Question =============== */
 export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) => {
   const q = (question ?? "").trim();
   const MAX_QUESTION_LEN = 999999;
@@ -71,8 +67,7 @@ export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) =
   const BASE_BACKOFF_MS = 600;
 
   let attempt = 0;
-  // retry on temporary errors; preserve messages/shape
-  // eslint-disable-next-line no-constant-condition
+
   while (true) {
     try {
       const { data } = await qNaClient.post("/ask", payload, {
@@ -123,9 +118,7 @@ export const askQuestion = async ({ chatId, question, k, d, dbSaveHint } = {}) =
   }
 };
 
-/* ========================================================
- * Chat: CRUD / Fetch
- * ====================================================== */
+/* =============== Chat: Create / Edit / Delete / Get =============== */
 export const getUserChats = async (userId) => {
   if (!userId) return [];
   const { data } = await chatClient.get(`/all/${userId}`);
@@ -167,9 +160,7 @@ export const getAllChats = async () => {
   return Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 };
 
-/* ========================================================
- * QnA: History / Cancel / Delete / Status / Save
- * ====================================================== */
+/* =============== QnA: History / Cancel / Delete / Status / Save =============== */
 export const getChatQna = async (chatId) => {
   if (!chatId) return [];
   try {

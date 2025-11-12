@@ -9,31 +9,23 @@ import React, {
 import { io } from "socket.io-client";
 import { EXPO_PUBLIC_SOCKET_URL } from '@env';
 
-/* ============================================================================
- * CONFIG
- * ========================================================================== */
+/** ================= Socket URL ================= */
 const SOCKET_URL = EXPO_PUBLIC_SOCKET_URL;
 
-/** คอนเท็กซ์หลักของ WebSocket */
+
 const WSContext = createContext(null);
 
-/* ============================================================================
- * PROVIDER
- * ========================================================================== */
+/* =============== PROVIDER =============== */
 export const WSProvider = ({ children }) => {
-  /* -------------------- สถานะการเชื่อมต่อ / ตัวแปรหลัก -------------------- */
-  const [connected, setConnected] = useState(false);        // true เมื่อ socket.connect แล้ว
-  const socketRef = useRef(null);                           // ออบเจ็กต์ socket.io
 
-  // === App-level listeners (เช่น on("done", ...)) ===
-  // เก็บเป็น Map<event, Set<handlers>> เพื่อให้ถอด-ใส่ได้เป็นรายตัว
+  /* =============== Connection State / Main Variables =============== */
+  const [connected, setConnected] = useState(false);
+  const socketRef = useRef(null);
+
+  /* =============== App-level listeners =============== */
   const appListenersRef = useRef(new Map());
 
-  /**
-   * appEmit(event, ...args)
-   * ตัวช่วยสำหรับ "ยิง" อีเวนต์ภายในแอป (เรียก handler ที่ลงทะเบียนผ่าน on/off)
-   * ใช้ในกรณีที่ socket รับ event จาก server แล้วอยาก broadcast ต่อในแอป
-   */
+  /* ================ App-level emit ================= */
   const appEmit = (event, ...args) => {
     const set = appListenersRef.current.get(event);
     if (!set || set.size === 0) return;
@@ -46,16 +38,11 @@ export const WSProvider = ({ children }) => {
     });
   };
 
-  // === Task multiplexing ===
-  // กรณีต้อง subscribe เหตุการณ์แยกตาม taskId -> เก็บเป็น Map<taskId, Set<handlers>>
-  const taskHandlersRef = useRef(new Map());        // taskId -> Set(handlers)
-  const taskSocketListenerRef = useRef(new Map());  // taskId -> listener fn ที่ผูกกับ socket
+  /* =============== Task-level handlers / socket listeners =============== */
+  const taskHandlersRef = useRef(new Map());
+  const taskSocketListenerRef = useRef(new Map());
 
-  /**
-   * attachTaskSocketListener(taskId)
-   * ผูก socket.on(taskId, route) หนึ่งครั้งต่อ taskId
-   * แล้ว route จะ fan-out payload ไปยัง handler ทั้งหมดของ task นั้น
-   */
+  /* ================ Attach / Detach Task Socket Listener ================= */
   const attachTaskSocketListener = (taskId) => {
     const socket = socketRef.current;
     if (!socket || !taskId) return;
@@ -76,32 +63,27 @@ export const WSProvider = ({ children }) => {
     socket.on(taskId, route);
     taskSocketListenerRef.current.set(taskId, route);
 
-    // (ออปชัน) แจ้ง server ว่ามีการ subscribe task ช่องนี้
+
     try {
       socket.emit("task:subscribe", { taskId });
-    } catch {}
+    } catch { }
   };
 
-  /**
-   * detachTaskSocketListener(taskId)
-   * ถอด socket.off(taskId, route) และลบ route ออกจากแผนที่
-   * ใช้เมื่อ taskId นั้นไม่มี handler เหลือแล้ว
-   */
+  /* ================ Detach Task Socket Listener ================= */
   const detachTaskSocketListener = (taskId) => {
     const socket = socketRef.current;
     const route = taskSocketListenerRef.current.get(taskId);
     if (socket && route) socket.off(taskId, route);
     taskSocketListenerRef.current.delete(taskId);
 
-    // (ออปชัน) แจ้ง server ว่ายกเลิก subscribe ช่องนี้
     try {
       socket?.emit?.("task:unsubscribe", { taskId });
-    } catch {}
+    } catch { }
   };
 
-  /* --------------------------- Bootstrap / Lifecycle --------------------------- */
+  /* =============== Bootstrap / Lifecycle =============== */
   useEffect(() => {
-    // กันสร้าง socket ซ้ำ (รองรับ Hot Reload)
+
     if (socketRef.current) return;
 
     if (!SOCKET_URL) {
@@ -109,7 +91,7 @@ export const WSProvider = ({ children }) => {
       return;
     }
 
-    // สร้าง socket instance
+    /* =============== Create Socket =============== */
     const socket = io(SOCKET_URL, {
       transports: ["websocket"],
       withCredentials: true,
@@ -120,17 +102,17 @@ export const WSProvider = ({ children }) => {
     });
     socketRef.current = socket;
 
-    // เชื่อมต่อสำเร็จ
+    /* =============== Socket Event Handlers =============== */
     socket.on("connect", () => {
+      // เข้าเชื่อมต่อสำเร็จ
       setConnected(true);
       console.log("✅ [WS] connected:", socket.id);
 
-      // Re-subscribe taskId ทั้งหมด (ถ้าฝั่ง server ต้องการ)
       const taskIds = Array.from(taskHandlersRef.current.keys());
       if (taskIds.length) {
         try {
           socket.emit("task:bulk_subscribe", { taskIds });
-        } catch {}
+        } catch { }
       }
     });
 
@@ -145,8 +127,7 @@ export const WSProvider = ({ children }) => {
       console.log("⚠️ [WS] disconnected:", reason);
     });
 
-    // ===== Bridge events from server -> App =====
-    // 1) task:done : แจ้งทั้ง app-level ("done") และ task-level (taskId เฉพาะ)
+    /* =============== App-level socket listeners =============== */
     socket.on("task:done", (payload) => {
       appEmit("done", payload);
       const t = payload?.taskId;
@@ -162,7 +143,7 @@ export const WSProvider = ({ children }) => {
       }
     });
 
-    // 2) task:error : ใช้สัญญาณเดียวกับ “done” เพื่อให้จบงานฝั่ง UI ได้
+
     socket.on("task:error", (payload) => {
       appEmit("done", payload);
       const t = payload?.taskId;
@@ -178,52 +159,38 @@ export const WSProvider = ({ children }) => {
       }
     });
 
-    // cleanup
+    /* =============== Cleanup on unmount =============== */
     return () => {
       try {
         socket.removeAllListeners();
         socket.disconnect();
-      } catch {}
+      } catch { }
       socketRef.current = null;
       taskSocketListenerRef.current.clear();
-      // NOTE: ไม่ล้าง taskHandlersRef เพื่อรองรับ Hot Reload
-      // ถ้าต้องการเคลียร์ทั้งหมด ให้รีสตาร์ตแอปหรือเพิ่มปุ่ม clear เอง
+
     };
   }, []);
 
-  /* ============================================================================
-   * PUBLIC API
-   * ========================================================================== */
+  /* =============== WS Methods =============== */
 
-  /**
-   * on(event, handler)
-   * ลงทะเบียนฟังเหตุการณ์ (ทั้ง app-level และจาก socket ตรงๆ)
-   * คืนฟังก์ชัน off เพื่อยกเลิก
-   */
   const on = (event, handler) => {
     if (!appListenersRef.current.has(event)) {
       appListenersRef.current.set(event, new Set());
     }
     appListenersRef.current.get(event).add(handler);
 
-    // เผื่อกรณีอยากฟังเหตุการณ์จาก server ชื่อเดียวกันโดยตรง
+
     socketRef.current?.on?.(event, handler);
 
     return () => off(event, handler);
   };
 
-  /**
-   * once(event, handler)
-   * ฟังเหตุการณ์ครั้งเดียวผ่าน socket.io โดยตรง
-   */
+  /* =============== once(event, handler) =============== */
   const once = (event, handler) => {
     socketRef.current?.once?.(event, handler);
   };
 
-  /**
-   * off(event, handler)
-   * ยกเลิกฟังเหตุการณ์จากทั้ง app-level registry และ socket
-   */
+  /* =============== off(event, handler) =============== */
   const off = (event, handler) => {
     const set = appListenersRef.current.get(event);
     if (set) {
@@ -233,30 +200,21 @@ export const WSProvider = ({ children }) => {
     socketRef.current?.off?.(event, handler);
   };
 
-  /**
-   * emit(event, payload)
-   * ส่งเหตุการณ์ขึ้น server ผ่าน socket
-   */
+  /* =============== emit(event, payload) =============== */
   const emit = (event, payload) => {
     socketRef.current?.emit?.(event, payload);
   };
 
-  /**
-   * subscribeTask(taskId, handler)
-   * สมัครฟังเหตุการณ์สำหรับ taskId เฉพาะ (socket channel = taskId)
-   * คืนฟังก์ชัน unsubscribe ที่จะถอด handler ออก และถ้า handler หมดจะถอด socket listener ออกด้วย
-   */
+  /* =============== subscribeTask(taskId, handler) =============== */
   const subscribeTask = (taskId, handler) => {
-    if (!taskId) return () => {};
+    if (!taskId) return () => { };
     if (!taskHandlersRef.current.has(taskId)) {
       taskHandlersRef.current.set(taskId, new Set());
     }
     taskHandlersRef.current.get(taskId).add(handler);
 
-    // ผูก socket listener ของ taskId นี้ (ถ้ายังไม่ผูก)
     attachTaskSocketListener(taskId);
 
-    // ถอดออกเมื่อไม่ใช้
     return () => {
       const set = taskHandlersRef.current.get(taskId);
       if (!set) return;
@@ -268,7 +226,7 @@ export const WSProvider = ({ children }) => {
     };
   };
 
-  // memo value
+  /* =============== Memoize Context Value =============== */
   const value = useMemo(
     () => ({
       socket: socketRef.current,
@@ -285,13 +243,7 @@ export const WSProvider = ({ children }) => {
   return <WSContext.Provider value={value}>{children}</WSContext.Provider>;
 };
 
-/* ============================================================================
- * HOOK
- * ========================================================================== */
-/**
- * useWS()
- * ดึงค่า context ของ WS; บังคับให้ใช้ภายใน <WSProvider>
- */
+/* =============== Hook to use WSContext =============== */
 export const useWS = () => {
   const ctx = useContext(WSContext);
   if (!ctx) throw new Error("useWS must be used within a WSProvider");

@@ -28,8 +28,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 
 import { useAuth } from "../src/auth/AuthContext";
-import { useWS } from "../src/ws/WSContext";
-
+import { useWS } from "../src/hooks/WSContext";
 import useThemePreference from "../src/hooks/useThemePreference";
 
 import buddhadhamBG from "../assets/buddhadham.png";
@@ -48,9 +47,10 @@ import {
   saveAnswer,
 } from "../src/api/chat";
 
+import { EXPO_PUBLIC_API_URL } from "@env";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/* ─────────────────────────── Constants ─────────────────────────── */
+/* =============== Constants =============== */
 const MIN_H = 40;
 const MAX_H = 140;
 const LINE_H = 20;
@@ -63,21 +63,13 @@ const CORNER_NEAR_AVATAR = 6;
 const STORAGE_PREFIX = "chat_state_v1:";
 const LAST_CHAT_ID_KEY = "last_selected_chat_id";
 
-
 const MAX_ATTACHMENT_BYTES = 100 * 1024;
 const SERVER_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const FRONTEND_BODY_LIMIT_BYTES = Math.floor(SERVER_BODY_LIMIT_BYTES * 0.9);
 
-const SUPPORTED_MIME = [
-  "text/plain",
-  "text/markdown",
-  "text/csv",
-  "application/json",
-  "application/xml",
-  "text/*",
-];
+const SUPPORTED_MIME = ["text/plain", "text/markdown", "text/csv", "application/json", "application/xml", "text/*"];
 
-/* ─────────────────────────── Utils ─────────────────────────── */
+/* =============== Utils =============== */
 const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
 const toTS = (v) => (v ? (typeof v === "number" ? v : Date.parse(v)) || 0 : 0);
 const formatTS = (d) =>
@@ -93,14 +85,8 @@ const formatTS = (d) =>
 
 const notify = (titleOrMsg, msg) => {
   const text = msg ? `${titleOrMsg}\n${msg}` : String(titleOrMsg);
-  if (Platform.OS === "web") {
-    try { window.alert(text); } catch { }
-    return;
-  }
-  if (Platform.OS === "android") {
-    try { ToastAndroid.show(text, ToastAndroid.SHORT); } catch { }
-    return;
-  }
+  if (Platform.OS === "web") { try { window.alert(text); } catch { } return; }
+  if (Platform.OS === "android") { try { ToastAndroid.show(text, ToastAndroid.SHORT); } catch { } return; }
   Alert.alert(titleOrMsg, msg);
 };
 
@@ -111,40 +97,27 @@ const inferMimeFromName = (name) => {
 };
 
 const utf8ByteLength = (str) => {
-  try {
-    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(str || "").length;
-  } catch { }
-  const s = String(str || "");
-  let bytes = 0;
-  for (let i = 0; i < s.length; i++) {
-    const codePoint = s.charCodeAt(i);
-    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : 3;
-  }
+  try { if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(str || "").length; } catch { }
+  const s = String(str || ""); let bytes = 0;
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); bytes += c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3; }
   return bytes;
 };
 
 const toDisplayQuestionOnly = (text) => {
   if (!text) return "";
   const s = String(text);
-  const newMark = "(ไฟล์แนบ:";
-  const newIdx = s.indexOf(newMark);
-  if (newIdx >= 0) {
-    const closeIdx = s.indexOf(")", newIdx);
-    return (closeIdx >= 0 ? s.slice(0, closeIdx + 1) : s.slice(0, newIdx) + ")").trim();
-  }
-  const oldSep = "\n---\n";
-  const oldIdx = s.indexOf(oldSep);
-  if (oldIdx >= 0) {
-    const anchor = "📎 เนื้อหาไฟล์แนบ (";
-    const aIdx = s.indexOf(anchor, oldIdx + oldSep.length);
+  const newMark = "(ไฟล์แนบ:"; const n = s.indexOf(newMark);
+  if (n >= 0) { const close = s.indexOf(")", n); return (close >= 0 ? s.slice(0, close + 1) : s.slice(0, n) + ")").trim(); }
+  const sep = "\n---\n"; const idx = s.indexOf(sep);
+  if (idx >= 0) {
+    const anchor = "📎 เนื้อหาไฟล์แนบ ("; const aIdx = s.indexOf(anchor, idx + sep.length);
     if (aIdx >= 0) {
-      const endParen = s.indexOf(")", aIdx);
-      const questionPart = s.slice(0, oldIdx).trim();
-      const fileLabel = endParen >= 0 ? s.slice(aIdx, endParen + 1) : s.slice(aIdx);
-      const fileShort = fileLabel.replace("เนื้อหาไฟล์แนบ", "ไฟล์แนบ");
-      return (questionPart ? questionPart + "\n\n" : "") + fileShort;
+      const end = s.indexOf(")", aIdx);
+      const q = s.slice(0, idx).trim();
+      const fileLabel = end >= 0 ? s.slice(aIdx, end + 1) : s.slice(aIdx);
+      return (q ? q + "\n\n" : "") + fileLabel.replace("เนื้อหาไฟล์แนบ", "ไฟล์แนบ");
     }
-    return s.slice(0, oldIdx).trim();
+    return s.slice(0, idx).trim();
   }
   return s;
 };
@@ -152,18 +125,15 @@ const toDisplayQuestionOnly = (text) => {
 const buildFullQuestion = (rawText, attachName, attachTextTrim) => {
   const hasText = !!(rawText && rawText.trim());
   const hasAttach = !!(attachTextTrim && attachTextTrim.trim());
-  if (hasAttach) {
-    return hasText
-      ? `${rawText.trim()}\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachName}):\n${attachTextTrim.trim()}`
-      : `(ไฟล์แนบ: ${attachName})\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachName}):\n${attachTextTrim.trim()}`;
-  }
-  return (rawText || "").trim();
+  if (!hasAttach) return (rawText || "").trim();
+  const head = hasText ? rawText.trim() : `(ไฟล์แนบ: ${attachName})`;
+  return `${head}\n\n---\n📎 เนื้อหาไฟล์แนบ (${attachName}):\n${attachTextTrim.trim()}`;
 };
 
 const estimatePayloadBytes = ({ chatId, question, dbSaveHint }) =>
   utf8ByteLength(JSON.stringify({ ...(chatId ? { chatId } : {}), question, ...(dbSaveHint ? { dbSaveHint } : {}) }));
 
-/* ─────────────────────── Storage (Async + Web) ─────────────────────── */
+/* =============== Storage =============== */
 const storage = {
   async getItem(key) {
     try { if (AsyncStorage?.getItem) return await AsyncStorage.getItem(key); } catch { }
@@ -176,17 +146,52 @@ const storage = {
   },
 };
 
-/* ─────────────────────────── Component ─────────────────────────── */
+/* =============== Small UI Pieces =============== */
+const MessageItem = ({ item, isDark, styles: S }) => {
+  const isUser = item.from === "user";
+  const isPending = item.pending === true;
+  return (
+    <View style={[S.msgRow, isUser ? S.rowR : S.rowL]}>
+      <View style={S.avatarWrap}>
+        <Image source={isUser ? userAvatar : botAvatar} style={S.avatarImg} resizeMode="cover" />
+      </View>
+      <View>
+        <View style={[S.messageWrapper, isUser ? S.bubbleUser : S.bubbleBot]}>
+          {isPending ? (
+            <View style={S.pendingRow}>
+              <ActivityIndicator color={isDark ? "#fff" : "#000"} />
+              <Text style={isUser ? S.bubbleUserText : S.bubbleBotText}>กำลังประมวลผล...</Text>
+            </View>
+          ) : (
+            <Markdown
+              style={{
+                body: isUser ? S.mdBodyUser : S.mdBodyBot,
+                strong: isUser ? S.mdStrongUser : S.mdStrongBot,
+                em: isUser ? S.mdEmUser : S.mdEmBot,
+                code_block: S.mdCodeBlock,
+                blockquote: S.mdBlockquote,
+              }}
+            >
+              {item.text}
+            </Markdown>
+          )}
+        </View>
+        <Text style={[S.timeText, isUser ? S.alignRight : S.alignLeft]}>{item.time}</Text>
+      </View>
+    </View>
+  );
+};
+
+/* =============== Main Component =============== */
 export default function ChatScreen({ navigation }) {
   const { on, subscribeTask } = useWS();
   const { user, logout } = useAuth();
-  const insets = useSafeAreaInsets();
+  useSafeAreaInsets();
 
-  /* ── Theme ── */
+  /* =============== Theme =============== */
   const { isDark, toggleTheme, C } = useThemePreference("chat");
 
-
-  /* ── Global sending/pending state ── */
+  /* =============== Global sending/pending state =============== */
   const [sending, setSending] = useState(false);
   const awaitingRef = useRef(false);
   useEffect(() => { awaitingRef.current = sending; }, [sending]);
@@ -201,7 +206,7 @@ export default function ChatScreen({ navigation }) {
   const [pendingQnaId, setPendingQnaId] = useState(null);
   const [pendingUserMsgId, setPendingUserMsgId] = useState(null);
 
-  /* ── UI state ── */
+  /* =============== UI state =============== */
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -210,12 +215,14 @@ export default function ChatScreen({ navigation }) {
   const [inputBarH, setInputBarH] = useState(0);
 
   const screenW = Dimensions.get("window").width;
-  const ROW_HPAD = 10;
-  const GAP_BETWEEN = 10;
+  const ROW_HPAD = 10, GAP_BETWEEN = 10;
   const HALF_W = Math.floor(screenW * 0.4) - (ROW_HPAD + GAP_BETWEEN);
   const BUBBLE_MAX_W = Math.max(HALF_W);
   const cornerShift = AVATAR_SIZE / 2 - CORNER_NEAR_AVATAR;
-  const S = useMemo(() => makeStyles(C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift), [C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift]);
+  const S = useMemo(
+    () => makeStyles(C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift),
+    [C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift]
+  );
 
   const listRef = useRef(null);
   const scrollToBottom = (animated = true) => {
@@ -225,7 +232,7 @@ export default function ChatScreen({ navigation }) {
     });
   };
 
-  /* ── Chats (list, selection, rename, delete) ── */
+  /* =============== Chats (list, selection, rename, delete) =============== */
   const [chats, setChats] = useState([]);
   const [selectedChatId, setSelectedChatId] = useState(null);
   const selectedChatIdRef = useRef(null);
@@ -241,12 +248,11 @@ export default function ChatScreen({ navigation }) {
 
   const persistSuspendedRef = useRef(false);
 
-  /* ── Web-only textarea auto height ── */
+  /* =============== textarea auto height =============== */
   const webRef = useRef(null);
   const adjustWebHeight = () => {
     if (Platform.OS !== "web") return;
-    const el = webRef.current;
-    if (!el) return;
+    const el = webRef.current; if (!el) return;
     el.style.height = "auto";
     const next = clampH(el.scrollHeight);
     el.style.height = `${next}px`;
@@ -255,15 +261,13 @@ export default function ChatScreen({ navigation }) {
   };
   useEffect(() => { if (Platform.OS === "web") adjustWebHeight(); }, []);
 
-  /* ── Attachment ── */
+  /* =============== Attachment =============== */
   const [attachment, setAttachment] = useState(null);
   const pickAttachment = async () => {
     try {
       const res = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true, type: SUPPORTED_MIME });
       if (res.canceled) return;
-
-      const f = res.assets?.[0];
-      if (!f) return;
+      const f = res.assets?.[0]; if (!f) return;
 
       const { name, size: sizeFromPicker, mimeType, uri } = f;
       const mime = mimeType || inferMimeFromName(name);
@@ -272,35 +276,25 @@ export default function ChatScreen({ navigation }) {
 
       let size = typeof sizeFromPicker === "number" ? sizeFromPicker : null;
       try {
-        if (Platform.OS === "web") {
-          const blob = await (await fetch(uri)).blob();
-          if (!size) size = blob.size;
-        } else {
-          const FileSystem = require("expo-file-system");
-          const info = await FileSystem.getInfoAsync(uri, { size: true });
-          if (!size) size = typeof info.size === "number" ? info.size : null;
-        }
+        if (Platform.OS === "web") { const blob = await (await fetch(uri)).blob(); if (!size) size = blob.size; }
+        else { const FileSystem = require("expo-file-system"); const info = await FileSystem.getInfoAsync(uri, { size: true }); if (!size) size = typeof info.size === "number" ? info.size : null; }
       } catch { }
 
       if (!size || size <= 0) return notify("ไฟล์ว่าง", "ไฟล์ที่เลือกมีขนาด 0 ไบต์");
       if (size > MAX_ATTACHMENT_BYTES) {
-        const kb = (size / 1024).toFixed(0);
-        const limitKb = (MAX_ATTACHMENT_BYTES / 1024).toFixed(0);
+        const kb = (size / 1024).toFixed(0); const limitKb = (MAX_ATTACHMENT_BYTES / 1024).toFixed(0);
         return notify("ไฟล์ใหญ่เกินไป", `ขนาด ${kb}KB เกินลิมิต ${limitKb}KB — ไม่สามารถแนบได้`);
       }
 
       let text = "";
       if (Platform.OS === "web") {
         text = await new Promise((resolve, reject) => {
-          fetch(uri)
-            .then((r) => r.blob())
-            .then((blob) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result || "");
-              reader.onerror = reject;
-              reader.readAsText(blob);
-            })
-            .catch(reject);
+          fetch(uri).then((r) => r.blob()).then((blob) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result || "");
+            reader.onerror = reject;
+            reader.readAsText(blob);
+          }).catch(reject);
         });
       } else {
         const FileSystem = require("expo-file-system");
@@ -329,7 +323,7 @@ export default function ChatScreen({ navigation }) {
   };
   const removeAttachment = () => setAttachment(null);
 
-  /* ── Pending bubble helpers ── */
+  /* =============== Pending bubble helpers =============== */
   const pendingBubbleId = (taskId) => `pending-${taskId}`;
   const makePendingBubble = (taskId) => ({
     id: taskId ? pendingBubbleId(taskId) : "pending-generic",
@@ -347,9 +341,7 @@ export default function ChatScreen({ navigation }) {
       if (taskId) return prev.filter((m) => m.id !== pendingBubbleId(taskId));
       const idx = prev.findIndex((m) => m.pending === true);
       if (idx < 0) return prev;
-      const copy = [...prev];
-      copy.splice(idx, 1);
-      return copy;
+      const copy = [...prev]; copy.splice(idx, 1); return copy;
     });
   };
   const upgradePendingBubble = (taskId) => {
@@ -357,13 +349,11 @@ export default function ChatScreen({ navigation }) {
     setMessages((prev) => {
       const genIdx = prev.findIndex((m) => m.pending === true && m.id === "pending-generic");
       if (genIdx === -1) return prev;
-      const copy = [...prev];
-      copy.splice(genIdx, 1, { ...prev[genIdx], id: `pending-${taskId}` });
-      return copy;
+      const copy = [...prev]; copy.splice(genIdx, 1, { ...prev[genIdx], id: `pending-${taskId}` }); return copy;
     });
   };
 
-  /* ── WS streaming result → replace pending bubble ── */
+  /* =============== WS streaming result → replace pending bubble =============== */
   useEffect(() => {
     const doneHandler = (payload) => {
       const matchesTask = !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
@@ -399,8 +389,7 @@ export default function ChatScreen({ navigation }) {
         if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
         const newMsg = { id: Date.now().toString(), from: "bot", text: finalText, time: formatTS(Date.now()) };
         if (idx >= 0) {
-          const copy = [...prev];
-          copy.splice(idx, 1, newMsg);
+          const copy = [...prev]; copy.splice(idx, 1, newMsg);
           setTimeout(() => scrollToBottom(true), 0);
           return copy;
         }
@@ -417,7 +406,7 @@ export default function ChatScreen({ navigation }) {
     return () => unsubscribe?.();
   }, [subscribeTask, currentTaskId]);
 
-  /* ── Polling (fallback heartbeat & status) ── */
+  /* =============== Polling (fallback heartbeat & status) =============== */
   const pollTimerRef = useRef(null);
   const heartbeatRef = useRef(null);
   const unmountedRef = useRef(false);
@@ -440,7 +429,6 @@ export default function ChatScreen({ navigation }) {
     }, 10_000);
   };
 
-  // เริ่ม polling ตรวจสถานะ และจัดการ error เคสหลัก
   const startPendingPoll = ({ chatId, taskId, pendingQnaId, pendingUserMsgId, pendingUserMsg, initialDelay = 1200 }) => {
     stopPendingPoll();
     startHeartbeat(chatId);
@@ -534,7 +522,7 @@ export default function ChatScreen({ navigation }) {
     poll(initialDelay);
   };
 
-  /* ── Load chats & history ── */
+  /* =============== Load chats & history =============== */
   const ensureActiveChat = async () => {
     if (!user) return { id: null, created: false };
     const currentId = selectedChatIdRef.current;
@@ -624,7 +612,6 @@ export default function ChatScreen({ navigation }) {
       });
 
       let nextMsgs = historyMsgs.slice();
-
       const rawSaved = await storage.getItem(STORAGE_PREFIX + String(chatId));
       if (rawSaved) {
         const saved = JSON.parse(rawSaved || {});
@@ -789,7 +776,7 @@ export default function ChatScreen({ navigation }) {
   useEffect(() => { if (!user) { setChats([]); setSelectedChatId(null); setMessages([]); return; } loadUserChats(); }, [user]);
   useEffect(() => { if (selectedChatId) loadHistory(selectedChatId); }, [selectedChatId]);
 
-  // persist session state of pending task
+  /* =============== Persist session state of pending task =============== */
   useEffect(() => {
     (async () => {
       if (!selectedChatId || persistSuspendedRef.current) return;
@@ -806,7 +793,7 @@ export default function ChatScreen({ navigation }) {
     })();
   }, [sending, currentTaskId, pendingQnaId, pendingUserMsgId, selectedChatId, messages]);
 
-  // clear expired pending when refocused
+  /* =============== Clear expired pending when refocused =============== */
   useFocusEffect(useCallback(() => {
     (async () => {
       const chatId = selectedChatIdRef.current;
@@ -817,11 +804,7 @@ export default function ChatScreen({ navigation }) {
 
       if (saved?.cancelledAt) {
         await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
-        setSending(false);
-        setShowStop(false);
-        setCurrentTaskId(null);
-        setPendingQnaId(null);
-        setPendingUserMsgId(null);
+        setSending(false); setShowStop(false); setCurrentTaskId(null); setPendingQnaId(null); setPendingUserMsgId(null);
         removePendingBotBubble(null);
         setMessages((prev) => prev.filter((m) => !(m.pending === true || (m.from === "user" && m.pendingClient))));
         return;
@@ -831,11 +814,7 @@ export default function ChatScreen({ navigation }) {
         const TTL_MS = 30 * 1000;
         if (!saved.savedAt || Date.now() - saved.savedAt > TTL_MS) {
           await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
-          setSending(false);
-          setShowStop(false);
-          setCurrentTaskId(null);
-          setPendingQnaId(null);
-          setPendingUserMsgId(null);
+          setSending(false); setShowStop(false); setCurrentTaskId(null); setPendingQnaId(null); setPendingUserMsgId(null);
           removePendingBotBubble(null);
           setMessages((prev) => prev.filter((m) => !(m.pending === true || (m.from === "user" && m.pendingClient))));
         }
@@ -843,13 +822,70 @@ export default function ChatScreen({ navigation }) {
     })();
   }, []));
 
+  /* =============== Auto scroll on changes =============== */
   useEffect(() => {
     scrollToBottom(true);
     const t = setTimeout(() => scrollToBottom(true), 120);
     return () => clearTimeout(t);
   }, [messages.length, sending, currentTaskId]);
 
-  /* ── Chat room ops ── */
+  /* =============== Guest cancel on tab close (web only) =============== */
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (user?.id || user?._id) return;
+
+    const qnaBase = `${EXPO_PUBLIC_API_URL}/qNa`;
+    const buildCancelUrl = (taskId, qnaId) => {
+      const url = new URL(`${qnaBase}/cancel/${encodeURIComponent(taskId)}`);
+      url.searchParams.set("guest", "1");
+      if (qnaId) url.searchParams.set("qNaId", String(qnaId));
+      return url.toString();
+    };
+
+    const sendGuestCancel = (taskId, qnaId) => {
+      if (!taskId) return false;
+      const url = buildCancelUrl(taskId, qnaId);
+      try {
+        const ok = navigator.sendBeacon(url, new Blob([], { type: "text/plain" }));
+        if (ok) return true;
+      } catch { }
+      try {
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guest: 1, qNaId: qnaId ?? null }),
+          keepalive: true,
+          credentials: "omit",
+          cache: "no-store",
+          mode: "cors",
+        }).catch(() => { });
+        return true;
+      } catch { }
+      return false;
+    };
+
+    let fired = false;
+    const fireOnce = () => {
+      if (fired) return;
+      const taskId = currentTaskIdRef.current;
+      if (!taskId) return;
+      fired = true;
+      sendGuestCancel(taskId, pendingQnaId || null);
+    };
+
+    const onBeforeUnload = () => fireOnce();
+    const onUnload = () => fireOnce();
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("unload", onUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("unload", onUnload);
+    };
+  }, [pendingQnaId, currentTaskId, user]);
+
+  /* =============== Chat room ops =============== */
   const addNewChat = async () => {
     if (!user) return notify("โหมดไม่บันทึก", "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ");
     try {
@@ -866,15 +902,15 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  const confirmDelete = () => (Platform.OS === "web" ? Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?")) : Promise.resolve(false));
+  const confirmDelete = () =>
+    Platform.OS === "web" ? Promise.resolve(window.confirm("ต้องการลบแชตนี้หรือไม่?")) : Promise.resolve(false);
+
   const handleLogout = async () => {
     try {
       await logout();
       if (Platform.OS === "web") window.location.reload();
       else {
-        setChats([]);
-        setSelectedChatId(null);
-        setMessages([]);
+        setChats([]); setSelectedChatId(null); setMessages([]);
         navigation.reset({ index: 0, routes: [{ name: "Login" }] });
       }
     } catch (e) {
@@ -926,7 +962,7 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /* ── Send / Cancel ── */
+  /* =============== Send / Cancel =============== */
   const firingRef = useRef(false);
   const triggerSend = async () => {
     if (firingRef.current || sending) return;
@@ -973,7 +1009,16 @@ export default function ChatScreen({ navigation }) {
     const userMsg = { id: String(now), from: "user", text: uiMessage, time: formatTS(now), pendingClient: true };
 
     setInputText("");
-    setInputHeight(MIN_H);
+
+    if (Platform.OS === "web") {
+      const el = webRef.current;
+      if (el) {
+        el.style.height = "";
+        setInputHeight(MIN_H);
+      }
+    }
+
+
     setAttachment(null);
     setPendingUserMsgId(userMsg.id);
     setMessages((prev) => [...prev, userMsg]);
@@ -1112,7 +1157,7 @@ export default function ChatScreen({ navigation }) {
     });
   };
 
-  /* ── Voice (web only) ── */
+  /* =============== Voice =============== */
   const [recording, setRecording] = useState(false);
   const webRecRef = useRef(null);
   const getWebRecognizer = () => {
@@ -1138,51 +1183,16 @@ export default function ChatScreen({ navigation }) {
   };
   const stopVoice = async () => { try { webRecRef.current?.stop?.(); } catch { } setRecording(false); };
 
-  /* ── Render message row ── */
-  const renderItem = ({ item }) => {
-    const isUser = item.from === "user";
-    const isPending = item.pending === true;
-    return (
-      <View style={[S.msgRow, isUser ? S.rowR : S.rowL]}>
-        <View style={S.avatarWrap}>
-          <Image source={isUser ? userAvatar : botAvatar} style={S.avatarImg} resizeMode="cover" />
-        </View>
-        <View>
-          <View style={[S.messageWrapper, isUser ? S.bubbleUser : S.bubbleBot]}>
-            {isPending ? (
-              <View style={S.pendingRow}>
-                <ActivityIndicator color={isDark ? "#fff" : "#000"} />
-                <Text style={isUser ? S.bubbleUserText : S.bubbleBotText}>กำลังประมวลผล...</Text>
-              </View>
-            ) : (
-              <Markdown
-                style={{
-                  body: isUser ? S.mdBodyUser : S.mdBodyBot,
-                  strong: isUser ? S.mdStrongUser : S.mdStrongBot,
-                  em: isUser ? S.mdEmUser : S.mdEmBot,
-                  code_block: S.mdCodeBlock,
-                  blockquote: S.mdBlockquote,
-                }}
-              >
-                {item.text}
-              </Markdown>
-            )}
-          </View>
-          <Text style={[S.timeText, isUser ? S.alignRight : S.alignLeft, isUser ? S.timeUser : S.timeBot]}>{item.time}</Text>
-        </View>
-      </View>
-    );
-  };
-
+  /* =============== Derived UI flags =============== */
   const hasText = (inputText || "").trim().length > 0;
   const hasAttach = !!(attachment && (attachment.text || "").trim().length > 0);
   const canSend = !sending && (hasText || hasAttach);
   const listContentPadBottom = 16 + (attachment ? 56 : 0);
 
-  /* ── UI ── */
+  /* =============== UI =============== */
   return (
     <SafeAreaView style={[S.container, S.containerBg, Platform.OS !== "web" ? S.withStatusBarPad : null]}>
-      {/* Sidebar */}
+      {/* =============== Sidebar =============== */}
       <Animated.View style={[S.sidebar, { left: sidebarAnim }, S.sidebarBg, S.sidebarBorderRight]}>
         <View style={S.sidebarHeader}>
           <Text style={[S.sidebarTitle, S.sidebarTitleColor]}>{user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}</Text>
@@ -1265,7 +1275,7 @@ export default function ChatScreen({ navigation }) {
 
       {sidebarOpen && <TouchableOpacity style={[S.backdrop, S.overlay]} activeOpacity={1} onPress={toggleSidebar} />}
 
-      {/* Header */}
+      {/* =============== Header =============== */}
       <View style={[S.header, S.headerBg]}>
         <View style={S.headerSideLeft}>
           <View style={S.rowGap10}>
@@ -1305,7 +1315,7 @@ export default function ChatScreen({ navigation }) {
         </View>
       </View>
 
-      {/* Body */}
+      {/* =============== Body =============== */}
       <KeyboardAvoidingView style={S.flex1}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <View style={[S.background, S.containerBg, S.flex1]}>
@@ -1320,7 +1330,7 @@ export default function ChatScreen({ navigation }) {
               <FlatList
                 ref={listRef}
                 data={messages}
-                renderItem={renderItem}
+                renderItem={({ item }) => <MessageItem item={item} isDark={isDark} styles={S} />}
                 keyExtractor={(item) => item.id.toString()}
                 style={S.flex1}
                 contentContainerStyle={S.listContent(listContentPadBottom)}
@@ -1341,7 +1351,7 @@ export default function ChatScreen({ navigation }) {
               </View>
             )}
 
-            {/* Input bar */}
+            {/* =============== Input bar =============== */}
             <View style={[S.inputContainerFixed, S.inputBarTheme]} onLayout={(e) => setInputBarH(e.nativeEvent.layout.height || 0)}>
               <textarea
                 ref={webRef}
@@ -1349,10 +1359,7 @@ export default function ChatScreen({ navigation }) {
                 placeholder="พิมพ์ข้อความ..."
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    if (canSend) triggerSend();
-                  }
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (canSend) triggerSend(); }
                 }}
                 disabled={sending}
                 style={S.webTextArea}
@@ -1411,7 +1418,7 @@ export default function ChatScreen({ navigation }) {
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
 
-      {/* Popup menu */}
+      {/* =============== Popup menu =============== */}
       <Modal transparent visible={!!menuFor} animationType="fade" onRequestClose={closeItemMenu}>
         <TouchableOpacity style={S.popupBackdrop} activeOpacity={1} onPress={closeItemMenu} />
         <View style={[S.popupMenu, getPopupStyle()]}>
@@ -1431,7 +1438,7 @@ export default function ChatScreen({ navigation }) {
   );
 }
 
-/* ─────────────────────────── Styles ─────────────────────────── */
+/* =============== Styles =============== */
 const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
   StyleSheet.create({
     container: { flex: 1 },
@@ -1439,7 +1446,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     containerBg: { backgroundColor: C.containerBg },
     flex1: { flex: 1 },
 
-    /* Sidebar */
+    /* =============== Sidebar =============== */
     sidebar: { position: "absolute", top: 0, bottom: 0, left: 0, width: 260, padding: 14, zIndex: 5 },
     sidebarBg: { backgroundColor: C.sidebarBg },
     sidebarBorderRight: { borderRightColor: C.divider, borderRightWidth: 1 },
@@ -1464,11 +1471,11 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     sidebarButton: { padding: 10, borderRadius: 8, alignItems: "center", marginTop: 10 },
     sidebarBottom: { marginTop: "auto" },
 
-    /* Overlay */
+    /* =============== Overlay =============== */
     backdrop: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 4 },
     overlay: { backgroundColor: C.overlay },
 
-    /* Header */
+    /* =============== Header =============== */
     header: { height: 60, paddingHorizontal: 12, justifyContent: "center", zIndex: 2 },
     headerBg: { backgroundColor: C.headerBg },
     headerCenter: { position: "absolute", left: 0, right: 0, alignItems: "center" },
@@ -1478,7 +1485,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     headerTitle: { fontSize: 18, fontWeight: "bold", letterSpacing: 0.3 },
     headerText: { color: C.headerText },
 
-    /* Chips */
+    /* =============== Chips =============== */
     themeChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: C.chipBg },
     themeChipText: { color: C.chipText, fontSize: 12 },
     loginButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
@@ -1493,7 +1500,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     blackText: { color: "#111" },
     guestTextInfo: { color: "#555" },
 
-    /* Background */
+    /* =============== Background =============== */
     background: { flex: 1 },
     bgWatermark: {
       position: "absolute",
@@ -1510,7 +1517,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     footerExtraGap: { height: EXTRA_BOTTOM_GAP },
     listContent: (padBottom) => ({ paddingTop: 12, paddingBottom: padBottom }),
 
-    /* Messages */
+    /* =============== Messages =============== */
     msgRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 10, marginVertical: 6 },
     rowR: { flexDirection: "row-reverse" },
     rowL: { flexDirection: "row" },
@@ -1539,7 +1546,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
 
     pendingRow: { flexDirection: "row", alignItems: "center", columnGap: 8 },
 
-    /* Markdown */
+    /* =============== Markdown =============== */
     mdBodyUser: { fontSize: 16, color: C.bubbleUserText, lineHeight: 22, ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}) },
     mdBodyBot: { fontSize: 16, color: C.bubbleBotText, lineHeight: 22, ...(Platform.OS === "web" ? { wordBreak: "break-word", overflowWrap: "anywhere" } : {}) },
     mdStrongUser: { color: C.bubbleUserText },
@@ -1552,15 +1559,13 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     timeText: { fontSize: 10, color: C.timeText, marginHorizontal: 6, marginTop: 4, maxWidth: BUBBLE_MAX_W },
     alignRight: { alignSelf: "flex-end", textAlign: "right" },
     alignLeft: { alignSelf: "flex-start", textAlign: "left" },
-    timeUser: {},
-    timeBot: {},
 
-    /* Loading */
+    /* =============== Loading =============== */
     loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
     loadingTextDark: { color: "#ddd", marginTop: 8 },
     loadingTextLight: { color: "#333", marginTop: 8 },
 
-    /* Input bar (web textarea used) */
+    /* =============== Input bar (web textarea used) =============== */
     inputContainerFixed: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12, borderTopWidth: 1, position: "relative" },
     inputBarTheme: { backgroundColor: C.inputBarBg, borderTopColor: C.border },
 
@@ -1586,7 +1591,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
       opacity: 1,
     },
 
-    /* Attachment chip */
+    /* =============== Attachment chip =============== */
     attachmentFloat: {
       position: "absolute",
       left: 20,
@@ -1609,7 +1614,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     attachmentText: { marginLeft: 6, flex: 1, color: "#0F172A", ...(Platform.OS === "web" ? { whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" } : {}) },
     attachmentCloseBtn: { paddingHorizontal: 4, paddingVertical: 2 },
 
-    /* Buttons */
+    /* =============== Buttons =============== */
     actionButton: { flexDirection: "row", alignItems: "center", borderRadius: 9999, paddingVertical: 10, paddingHorizontal: 14, shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 6 },
     attachBtn: { backgroundColor: C.sendBtn, marginRight: 8 },
     actionBtnSend: { backgroundColor: C.sendBtn },
@@ -1618,20 +1623,17 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     disabled06: { opacity: 0.6 },
     mr8: { marginRight: 8 },
 
-    /* Popup */
+    /* =============== Popup =============== */
     popupBackdrop: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "transparent" },
     popupMenu: { position: "absolute", backgroundColor: "#fff", borderRadius: 12, paddingVertical: 6, shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 8, zIndex: 1000 },
     popupArrow: { position: "absolute", top: -8, left: 16, width: 0, height: 0, borderLeftWidth: 8, borderRightWidth: 8, borderBottomWidth: 8, borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: "#fff" },
     popupItem: { paddingVertical: 10, paddingHorizontal: 14 },
     dangerText: { color: "#e74c3c" },
 
-    /* Inline rename */
+    /* =============== Inline rename =============== */
     renameInlineRow: { flexDirection: "row", alignItems: "center", gap: 6, width: "100%" },
     renameInlineInput: { flex: 1, minWidth: 0, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, fontSize: 14 },
     renameInlineInputTheme: { borderColor: C.divider, backgroundColor: "#fff" },
     renameInlineBtns: { flexDirection: "row", alignItems: "center" },
     inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
-
-    timeUserText: {},
-    timeBotText: {},
   });
