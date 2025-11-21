@@ -1290,7 +1290,7 @@ export default function ChatScreen({ navigation }) {
 
     addPendingBotBubble(null);
 
-    
+
 
     try {
       const resp = await askQuestion({ chatId: user ? chatIdToUse : undefined, question: fullQuestion, dbSaveHint });
@@ -1330,14 +1330,47 @@ export default function ChatScreen({ navigation }) {
       }
     } catch (error) {
       console.error("askQuestion error:", error);
-      removePendingBotBubble(null);
-      setMessages((prev) => [
-        ...prev,
-        { id: String(Date.now() + 1), from: "bot", text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์", time: formatTS(Date.now()) },
-      ]);
-      setMessages((prev) => prev.map((m) => (m.id === pendingUserMsgId && m.from === "user" ? { ...m, pendingClient: false } : m)));
+
+
+      notify("เกิดข้อผิดพลาด", "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง");
+
+      // บันทึก error ลงฐานข้อมูล 
+      if (user && chatIdToUse) {
+        try {
+          await saveAnswer({
+            taskId: null,
+            chatId: chatIdToUse,
+            qNaWords:
+              "ERROR: " +
+              (error?.message || "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง"),
+          });
+        } catch (eSave) {
+          console.warn(
+            "saveAnswer (askQuestion error) failed:",
+            eSave?.message || eSave
+          );
+        }
+      }
+
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.pending === true && m.from === "bot") {
+            return {
+              ...m,
+              pending: false,
+              text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง",
+            };
+          }
+          if (m.id === pendingUserMsgId && m.from === "user") {
+            return { ...m, pendingClient: false };
+          }
+          return m;
+        })
+      );
+
       hardResetPendingState();
     }
+
   };
 
   const cancelSending = async () => {
