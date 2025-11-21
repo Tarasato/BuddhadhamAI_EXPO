@@ -1323,11 +1323,24 @@ export default function ChatScreen({ navigation }) {
         );
       }
 
+      // เรียก polling ทันทีหลังส่งคำถามสำเร็จ
+      if (taskId) {
+        startPendingPoll({
+          chatId: chatIdToUse || null,
+          taskId,
+          pendingQnaId: qId || null,
+          pendingUserMsgId: userMsg.id,
+          pendingUserMsg: userMsg,
+          initialDelay: 1000,
+        });
+      }
+
       if (createdNewRoom && chatIdToUse) {
         await loadHistory(chatIdToUse);
         addPendingBotBubble(taskId || null);
         scrollToBottom(true);
       }
+
     } catch (error) {
       console.error("askQuestion error:", error);
       removePendingBotBubble(null);
