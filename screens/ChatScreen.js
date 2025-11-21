@@ -626,7 +626,6 @@ export default function ChatScreen({ navigation }) {
           setPendingUserMsgId(null);
           setLoadingHistory(false);
           persistSuspendedRef.current = false;
-          setTimeout(() => scrollToBottom(false), 0);
           return;
         }
 
@@ -761,7 +760,6 @@ export default function ChatScreen({ navigation }) {
 
       nextMsgs.sort((a, b) => (a.tsNum || 0) - (b.tsNum || 0));
       setMessages(nextMsgs);
-      setTimeout(() => scrollToBottom(false), 0);
     } catch (err) {
       console.error("loadHistory error:", err);
       notify("ผิดพลาด", "ไม่สามารถโหลดประวัติแชตได้");
@@ -822,12 +820,7 @@ export default function ChatScreen({ navigation }) {
     })();
   }, []));
 
-  /* =============== Auto scroll on changes =============== */
-  useEffect(() => {
-    scrollToBottom(true);
-    const t = setTimeout(() => scrollToBottom(true), 120);
-    return () => clearTimeout(t);
-  }, [messages.length, sending, currentTaskId]);
+
 
   /* =============== Guest cancel on tab close (web only) =============== */
   useEffect(() => {
@@ -895,7 +888,6 @@ export default function ChatScreen({ navigation }) {
       setChats((prev) => [item, ...prev]);
       setSelectedChatId(newChatId);
       setMessages([]);
-      setTimeout(() => scrollToBottom(false), 0);
     } catch (err) {
       console.error("createChat error:", err);
       notify("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
@@ -1336,8 +1328,6 @@ export default function ChatScreen({ navigation }) {
                 contentContainerStyle={S.listContent(listContentPadBottom)}
                 ListFooterComponent={<View style={S.footerExtraGap} />}
                 keyboardShouldPersistTaps="handled"
-                onLayout={() => scrollToBottom(false)}
-                onContentSizeChange={() => scrollToBottom(false)}
               />
             )}
 
