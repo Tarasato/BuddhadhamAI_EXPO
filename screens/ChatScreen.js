@@ -1035,14 +1035,7 @@ export default function ChatScreen({ navigation }) {
   useEffect(() => { if (selectedChatId) storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId)); }, [selectedChatId]);
   useEffect(() => { if (!user) { setChats([]); setSelectedChatId(null); setMessages([]); return; } loadUserChats(); }, [user]);
   useEffect(() => { if (selectedChatId) loadHistory(selectedChatId); }, [selectedChatId]);
-  useEffect(() => {
-    if (!loadingHistory && messages.length > 0) {
-      const id = setTimeout(() => {
-        scrollToBottom(false, true);
-      }, 0);
-      return () => clearTimeout(id);
-    }
-  }, [loadingHistory, messages.length]);
+
 
 
   /* =============== Persist session state of pending task =============== */
@@ -1062,13 +1055,6 @@ export default function ChatScreen({ navigation }) {
     })();
   }, [sending, currentTaskId, pendingQnaId, pendingUserMsgId, selectedChatId, messages]);
 
-  useEffect(() => {
-    if (!shouldScrollRef.current) return;
-
-    requestAnimationFrame(() => {
-      scrollToBottom(true, true);
-    });
-  }, [messages]);
 
 
   /* =============== Clear expired pending when refocused =============== */
