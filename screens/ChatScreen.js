@@ -528,7 +528,7 @@ export default function ChatScreen({ navigation }) {
           const isDone = state === "done" || status === "done";
 
           if (isRunning) {
-            const nextDelay = 10000
+            const nextDelay = 5000;
             await storage.setItem(
               STORAGE_PREFIX + String(chatId),
               JSON.stringify({
