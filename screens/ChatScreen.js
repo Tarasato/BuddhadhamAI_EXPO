@@ -56,7 +56,7 @@ const MAX_H = 140;
 const LINE_H = 20;
 const PAD_V_TOP = 10;
 const PAD_V_BOTTOM = 10;
-const EXTRA_BOTTOM_GAP = 24;
+const EXTRA_BOTTOM_GAP = 0;
 const AVATAR_SIZE = 44;
 const CORNER_NEAR_AVATAR = 6;
 
@@ -226,13 +226,25 @@ export default function ChatScreen({ navigation }) {
 
   const listRef = useRef(null);
   const shouldScrollRef = useRef(false);
-  const scrollToBottom = (animated = true) => {
-    requestAnimationFrame(() => {
-      if (listRef.current) {
-        listRef.current.scrollToEnd({ animated });
-      }
-    });
+
+  const scrollToBottom = (animated = true, resetFlag = false) => {
+    if (!listRef.current) return;
+
+    try {
+      listRef.current.scrollToOffset({
+        offset: Number.MAX_SAFE_INTEGER,
+        animated,
+      });
+    } catch (e) {
+      console.warn("scrollToBottom error:", e);
+    }
+
+    if (resetFlag) {
+      shouldScrollRef.current = false;
+    }
   };
+
+
 
   /* =============== Chats (list, selection, rename, delete) =============== */
   const [chats, setChats] = useState([]);
@@ -1020,10 +1032,18 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-
   useEffect(() => { if (selectedChatId) storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId)); }, [selectedChatId]);
   useEffect(() => { if (!user) { setChats([]); setSelectedChatId(null); setMessages([]); return; } loadUserChats(); }, [user]);
   useEffect(() => { if (selectedChatId) loadHistory(selectedChatId); }, [selectedChatId]);
+  useEffect(() => {
+    if (!loadingHistory && messages.length > 0) {
+      const id = setTimeout(() => {
+        scrollToBottom(false, true);
+      }, 0);
+      return () => clearTimeout(id);
+    }
+  }, [loadingHistory, messages.length]);
+
 
   /* =============== Persist session state of pending task =============== */
   useEffect(() => {
@@ -1041,6 +1061,15 @@ export default function ChatScreen({ navigation }) {
       await storage.setItem(STORAGE_PREFIX + String(selectedChatId), JSON.stringify(data));
     })();
   }, [sending, currentTaskId, pendingQnaId, pendingUserMsgId, selectedChatId, messages]);
+
+  useEffect(() => {
+    if (!shouldScrollRef.current) return;
+
+    requestAnimationFrame(() => {
+      scrollToBottom(true, true);
+    });
+  }, [messages]);
+
 
   /* =============== Clear expired pending when refocused =============== */
   useFocusEffect(useCallback(() => {
@@ -1431,9 +1460,7 @@ export default function ChatScreen({ navigation }) {
   const hasText = (inputText || "").trim().length > 0;
   const hasAttach = !!(attachment && (attachment.text || "").trim().length > 0);
   const canSend = !sending && (hasText || hasAttach);
-  const listContentPadBottom =
-    inputBarH + EXTRA_BOTTOM_GAP + (attachment ? 56 : 0);
-
+  const listContentPadBottom = 16 + (attachment ? 56 : 0);
 
   /* =============== UI =============== */
   return (
@@ -1583,12 +1610,10 @@ export default function ChatScreen({ navigation }) {
                 ListFooterComponent={<View style={S.footerExtraGap} />}
                 keyboardShouldPersistTaps="handled"
                 onContentSizeChange={() => {
-                  if (shouldScrollRef.current) {
-                    scrollToBottom(true);
-                    shouldScrollRef.current = false;
-                  }
+                  requestAnimationFrame(() => {
+                    scrollToBottom(false, false);
+                  });
                 }}
-
               />
             )}
 
