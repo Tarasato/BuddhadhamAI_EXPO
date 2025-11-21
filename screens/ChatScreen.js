@@ -225,10 +225,12 @@ export default function ChatScreen({ navigation }) {
   );
 
   const listRef = useRef(null);
+  const shouldScrollRef = useRef(false);
   const scrollToBottom = (animated = true) => {
     requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated });
-      setTimeout(() => listRef.current?.scrollToEnd({ animated }), 60);
+      if (listRef.current) {
+        listRef.current.scrollToEnd({ animated });
+      }
     });
   };
 
@@ -368,14 +370,24 @@ export default function ChatScreen({ navigation }) {
   useEffect(() => {
     const taskId = currentTaskIdRef.current;
     if (!taskId) return;
+
     const handler = (msgObj) => {
-      const matchesTask = !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
-      const matchesChat = !!msgObj?.chatId && String(msgObj.chatId) === String(selectedChatIdRef.current);
+      shouldScrollRef.current = true;
+
+      const matchesTask =
+        !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
+      const matchesChat =
+        !!msgObj?.chatId &&
+        String(msgObj.chatId) === String(selectedChatIdRef.current);
+
       let accept = matchesTask || matchesChat;
       if (!accept && awaitingRef.current) accept = true;
       if (!accept) return;
 
-      const finalText = typeof msgObj === "string" ? msgObj : msgObj?.text ?? JSON.stringify(msgObj);
+      const finalText =
+        typeof msgObj === "string"
+          ? msgObj
+          : msgObj?.text ?? JSON.stringify(msgObj);
 
       if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
         setCurrentTaskId(msgObj.taskId);
@@ -383,28 +395,52 @@ export default function ChatScreen({ navigation }) {
       }
 
       const tId = msgObj?.taskId || currentTaskIdRef.current;
+
       setMessages((prev) => {
         const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
+
         let idx = prev.findIndex((m) => m.id === pendId);
         if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
-        const newMsg = { id: Date.now().toString(), from: "bot", text: finalText, time: formatTS(Date.now()) };
+
+        const newMsg = {
+          id: Date.now().toString(),
+          from: "bot",
+          text: finalText,
+          time: formatTS(Date.now()),
+        };
+
+        let next;
         if (idx >= 0) {
-          const copy = [...prev]; copy.splice(idx, 1, newMsg);
-          setTimeout(() => scrollToBottom(true), 0);
-          return copy;
+          next = [...prev];
+          next.splice(idx, 1, newMsg);
+        } else {
+          next = [...prev, newMsg];
         }
-        const next = [...prev, newMsg];
-        setTimeout(() => scrollToBottom(true), 0);
+
+        next = next.map((m) =>
+          m.id === pendingUserMsgId && m.from === "user"
+            ? { ...m, pendingClient: false }
+            : m
+        );
+
         return next;
       });
-      setMessages((prev) => prev.map((m) => (m.id === pendingUserMsgId && m.from === "user" ? { ...m, pendingClient: false } : m)));
+
       hardResetPendingState();
+
       const chatId2 = selectedChatIdRef.current;
-      if (chatId2) storage.setItem(STORAGE_PREFIX + String(chatId2), JSON.stringify({ sending: false, savedAt: Date.now() }));
+      if (chatId2) {
+        storage.setItem(
+          STORAGE_PREFIX + String(chatId2),
+          JSON.stringify({ sending: false, savedAt: Date.now() })
+        );
+      }
     };
+
     const unsubscribe = subscribeTask(taskId, handler);
     return () => unsubscribe?.();
   }, [subscribeTask, currentTaskId]);
+
 
   /* =============== Polling (fallback heartbeat & status) =============== */
   const pollTimerRef = useRef(null);
@@ -439,7 +475,6 @@ export default function ChatScreen({ navigation }) {
         ...prev.filter((m) => !(m.pending === true && m.from === "bot")),
         { id: String(now), from: "bot", text, time: formatTS(now) },
       ]);
-      setTimeout(() => scrollToBottom(true), 0);
     };
 
     const handleFailureAndCancel = async (userMsgIdToClear, errTextForUser) => {
@@ -1013,8 +1048,9 @@ export default function ChatScreen({ navigation }) {
 
     setAttachment(null);
     setPendingUserMsgId(userMsg.id);
+    shouldScrollRef.current = true;
     setMessages((prev) => [...prev, userMsg]);
-    scrollToBottom(true);
+
 
     setSending(true);
     setShowStop(false);
@@ -1328,6 +1364,13 @@ export default function ChatScreen({ navigation }) {
                 contentContainerStyle={S.listContent(listContentPadBottom)}
                 ListFooterComponent={<View style={S.footerExtraGap} />}
                 keyboardShouldPersistTaps="handled"
+                onContentSizeChange={() => {
+                  if (shouldScrollRef.current) {
+                    scrollToBottom(true);
+                    shouldScrollRef.current = false;
+                  }
+                }}
+
               />
             )}
 
