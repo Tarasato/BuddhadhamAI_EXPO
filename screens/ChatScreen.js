@@ -1431,7 +1431,9 @@ export default function ChatScreen({ navigation }) {
   const hasText = (inputText || "").trim().length > 0;
   const hasAttach = !!(attachment && (attachment.text || "").trim().length > 0);
   const canSend = !sending && (hasText || hasAttach);
-  const listContentPadBottom = 16 + (attachment ? 56 : 0);
+  const listContentPadBottom =
+    inputBarH + EXTRA_BOTTOM_GAP + (attachment ? 56 : 0);
+
 
   /* =============== UI =============== */
   return (
