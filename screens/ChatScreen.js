@@ -170,6 +170,7 @@ const MessageItem = ({ item, isDark, styles: S }) => {
                 em: isUser ? S.mdEmUser : S.mdEmBot,
                 code_block: S.mdCodeBlock,
                 blockquote: S.mdBlockquote,
+                break: S.mdBreak,
               }}
             >
               {item.text}
@@ -1290,7 +1291,7 @@ export default function ChatScreen({ navigation }) {
 
     addPendingBotBubble(null);
 
-    
+
 
     try {
       const resp = await askQuestion({ chatId: user ? chatIdToUse : undefined, question: fullQuestion, dbSaveHint });
@@ -1819,6 +1820,7 @@ const makeStyles = (C, isDark, inputHeight, BUBBLE_MAX_W, cornerShift) =>
     mdEmBot: { color: C.bubbleBotText },
     mdCodeBlock: { color: isDark ? "#fff" : "#0F172A", backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9", borderRadius: 8, padding: 8 },
     mdBlockquote: { color: isDark ? "#fff" : "#0F172A", backgroundColor: isDark ? "#2b2b2b" : "#f1f5f9", fontStyle: "italic", borderLeftWidth: 3, borderLeftColor: isDark ? "#64748b" : "#c7d2fe", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+    mdBreak: { height: 1, backgroundColor: C.divider, marginVertical: 8 },
 
     timeText: { fontSize: 10, color: C.timeText, marginHorizontal: 6, marginTop: 4, maxWidth: BUBBLE_MAX_W },
     alignRight: { alignSelf: "flex-end", textAlign: "right" },
