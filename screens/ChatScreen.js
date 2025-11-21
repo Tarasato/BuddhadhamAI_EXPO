@@ -633,7 +633,13 @@ export default function ChatScreen({ navigation }) {
 
     try {
       const rows = await getChatQna(chatId);
-      const sorted = (rows || []).slice().sort((a, b) => toTS(a?.createdAt || a?.createAt) - toTS(b?.createdAt || b?.createAt));
+      const sorted = (rows || [])
+        .slice()
+        .sort(
+          (a, b) =>
+            toTS(a?.createdAt || a?.createAt) -
+            toTS(b?.createdAt || b?.createAt)
+        );
 
       const historyMsgs = sorted.map((r, idx) => {
         const tsNum = toTS(r?.createdAt || r?.createAt || Date.now());
@@ -647,163 +653,373 @@ export default function ChatScreen({ navigation }) {
       });
 
       let nextMsgs = historyMsgs.slice();
-      const rawSaved = await storage.getItem(STORAGE_PREFIX + String(chatId));
+      const rawSaved = await storage.getItem(
+        STORAGE_PREFIX + String(chatId)
+      );
       if (rawSaved) {
         const saved = JSON.parse(rawSaved || {});
         if (saved?.cancelledAt) {
-          await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
-          nextMsgs = nextMsgs.filter((m) => !(m.pending === true || (m.from === "user" && m.pendingClient)));
-          setMessages(nextMsgs);
+          await storage.setItem(
+            STORAGE_PREFIX + String(chatId),
+            JSON.stringify({ sending: false, savedAt: Date.now() })
+          );
           setSending(false);
           setShowStop(false);
           setCurrentTaskId(null);
           setPendingQnaId(null);
           setPendingUserMsgId(null);
+
+          nextMsgs = nextMsgs.filter(
+            (m) =>
+              !(
+                m.pending === true ||
+                (m.from === "user" && m.pendingClient)
+              )
+          );
+          setMessages(nextMsgs);
+          shouldScrollRef.current = true;
+
           setLoadingHistory(false);
           persistSuspendedRef.current = false;
           return;
         }
 
         if (saved?.sending) {
-          const savedPendingMsg = saved.pendingUserMsg || null;
-          const savedPendingTs = toTS(savedPendingMsg?.time) || toTS(saved.pendingUserMsgTs) || toTS(saved.savedAt);
-          const TEXT_NORM = (s) => (s || "").trim();
-          const hasSameUserQRecorded = !!savedPendingMsg && historyMsgs.some((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
-          const hasBotAfterPending = historyMsgs.some((m) => m.from === "bot" && (m.tsNum || 0) >= (savedPendingTs || 0));
-
-          setSending(true);
-          setShowStop(false);
-          if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
-          stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
-
-          if (hasBotAfterPending) {
-            await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
+          const TTL_MS = 30 * 1000;
+          if (!saved.savedAt || Date.now() - saved.savedAt > TTL_MS) {
+            await storage.setItem(
+              STORAGE_PREFIX + String(chatId),
+              JSON.stringify({ sending: false, savedAt: Date.now() })
+            );
             setSending(false);
             setShowStop(false);
             setCurrentTaskId(null);
             setPendingQnaId(null);
             setPendingUserMsgId(null);
+            removePendingBotBubble(null);
+            setMessages((prev) =>
+              prev.filter(
+                (m) =>
+                  !(
+                    m.pending === true ||
+                    (m.from === "user" && m.pendingClient)
+                  )
+              )
+            );
           } else {
-            const taskId = saved.currentTaskId || null;
-            const qId = saved.pendingQnaId || null;
+            const savedPendingMsg = saved.pendingUserMsg || null;
+            const savedPendingTs =
+              toTS(savedPendingMsg?.time) ||
+              toTS(saved.pendingUserMsgTs) ||
+              toTS(saved.savedAt);
+            const TEXT_NORM = (s) => (s || "").trim();
+            const hasSameUserQRecorded =
+              !!savedPendingMsg &&
+              historyMsgs.some(
+                (m) =>
+                  m.from === "user" &&
+                  TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text)
+              );
+            const hasBotAfterPending = historyMsgs.some(
+              (m) =>
+                m.from === "bot" &&
+                (m.tsNum || 0) >= (savedPendingTs || 0)
+            );
 
-            if (!nextMsgs.some((m) => m.pending === true)) {
-              nextMsgs.push({ id: "pending-generic", from: "bot", pending: true, text: "กำลังประมวลผล...", time: formatTS(Date.now()), tsNum: Date.now(), pendingClient: true });
-            }
+            setSending(true);
+            setShowStop(false);
+            if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+            stopTimerRef.current = setTimeout(
+              () => setShowStop(true),
+              450
+            );
 
-            if (taskId) {
-              const hasSameUserQInNext = !!savedPendingMsg && nextMsgs.some((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
-              if (savedPendingMsg && !hasSameUserQInNext) {
-                nextMsgs.push({ id: savedPendingMsg.id, from: "user", text: toDisplayQuestionOnly(savedPendingMsg.text), time: savedPendingMsg.time, tsNum: toTS(savedPendingMsg.time) || Date.now(), pendingClient: true });
-              } else if (savedPendingMsg && hasSameUserQInNext) {
-                const idx = nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
-                if (idx >= 0) { nextMsgs[idx] = { ...nextMsgs[idx], pendingClient: true }; setPendingUserMsgId(nextMsgs[idx].id); }
-              }
-
-              const pendId = "pending-" + String(taskId);
-              if (!nextMsgs.some((m) => m.id === pendId)) {
-                const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
-                if (genIdx >= 0) nextMsgs.splice(genIdx, 1);
-                nextMsgs.push({ id: pendId, from: "bot", pending: true, text: "กำลังประมวลผล...", time: formatTS(Date.now()), tsNum: Date.now() });
-              }
-
-              setCurrentTaskId(taskId);
-              setPendingQnaId(qId || null);
-              const recordedIdx = savedPendingMsg
-                ? nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text))
-                : -1;
-              setPendingUserMsgId(recordedIdx >= 0 ? nextMsgs[recordedIdx].id : saved?.pendingUserMsgId || savedPendingMsg?.id || null);
-
+            if (hasBotAfterPending) {
               await storage.setItem(
                 STORAGE_PREFIX + String(chatId),
-                JSON.stringify({
-                  sending: true,
-                  currentTaskId: taskId,
-                  pendingQnaId: qId || null,
-                  pendingUserMsgId: recordedIdx >= 0 ? nextMsgs[recordedIdx].id : saved?.pendingUserMsgId || savedPendingMsg?.id || null,
-                  pendingUserMsg: savedPendingMsg || null,
-                  pendingUserMsgTs: savedPendingTs || Date.now(),
-                  savedAt: Date.now(),
-                })
+                JSON.stringify({ sending: false, savedAt: Date.now() })
               );
-
-              startPendingPoll({ chatId, taskId, pendingQnaId: qId || null, pendingUserMsgId: saved.pendingUserMsgId || null, pendingUserMsg: savedPendingMsg || null });
+              setSending(false);
+              setShowStop(false);
+              setCurrentTaskId(null);
+              setPendingQnaId(null);
+              setPendingUserMsgId(null);
             } else {
-              if (savedPendingMsg && !hasBotAfterPending && !hasSameUserQRecorded) {
-                try {
-                  if (!nextMsgs.some((m) => m.id === saved.pendingUserMsgId)) {
-                    nextMsgs.push({ id: savedPendingMsg.id, from: "user", text: toDisplayQuestionOnly(savedPendingMsg.text), time: savedPendingMsg.time || formatTS(savedPendingTs || Date.now()), tsNum: savedPendingTs || Date.now(), pendingClient: true });
-                  } else {
-                    const idx = nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text));
-                    if (idx >= 0) { nextMsgs[idx] = { ...nextMsgs[idx], pendingClient: true }; setPendingUserMsgId(nextMsgs[idx].id); }
+              const taskId = saved.currentTaskId || null;
+              const qId = saved.pendingQnaId || null;
+
+              if (!nextMsgs.some((m) => m.pending === true)) {
+                nextMsgs.push({
+                  id: "pending-generic",
+                  from: "bot",
+                  pending: true,
+                  text: "กำลังประมวลผล...",
+                  time: formatTS(Date.now()),
+                  tsNum: Date.now(),
+                  pendingClient: true,
+                });
+              }
+
+              if (taskId) {
+                const hasSameUserQInNext =
+                  !!savedPendingMsg &&
+                  nextMsgs.some(
+                    (m) =>
+                      m.from === "user" &&
+                      TEXT_NORM(m.text) ===
+                      TEXT_NORM(savedPendingMsg.text)
+                  );
+                if (savedPendingMsg && !hasSameUserQInNext) {
+                  nextMsgs.push({
+                    id: savedPendingMsg.id,
+                    from: "user",
+                    text: toDisplayQuestionOnly(
+                      savedPendingMsg.text
+                    ),
+                    time: savedPendingMsg.time,
+                    tsNum:
+                      toTS(savedPendingMsg.time) || Date.now(),
+                    pendingClient: true,
+                  });
+                } else if (savedPendingMsg && hasSameUserQInNext) {
+                  const idx = nextMsgs.findIndex(
+                    (m) =>
+                      m.from === "user" &&
+                      TEXT_NORM(m.text) ===
+                      TEXT_NORM(savedPendingMsg.text)
+                  );
+                  if (idx >= 0) {
+                    nextMsgs[idx] = {
+                      ...nextMsgs[idx],
+                      pendingClient: true,
+                    };
+                    setPendingUserMsgId(nextMsgs[idx].id);
                   }
+                }
 
-                  const resp2 = await askQuestion({ chatId, question: toDisplayQuestionOnly(savedPendingMsg.text) });
-                  const newTaskId = resp2?.taskId || resp2?.id || resp2?.data?.taskId || resp2?.data?.id || null;
-                  const newQId =
-                    resp2?.qNaId ||
-                    resp2?.data?.qNaId ||
-                    resp2?.data?.savedRecordQuestion?.qNaId ||
-                    resp2?.savedRecordQuestion?.qNaId ||
-                    resp2?.questionRecord?.qNaId ||
-                    null;
+                const pendId = "pending-" + String(taskId);
+                if (!nextMsgs.some((m) => m.id === pendId)) {
+                  const genIdx = nextMsgs.findIndex(
+                    (m) => m.id === "pending-generic"
+                  );
+                  if (genIdx >= 0) nextMsgs.splice(genIdx, 1);
+                  nextMsgs.push({
+                    id: pendId,
+                    from: "bot",
+                    pending: true,
+                    text: "กำลังประมวลผล...",
+                    time: formatTS(Date.now()),
+                    tsNum: Date.now(),
+                  });
+                }
 
-                  setCurrentTaskId(newTaskId);
-                  setPendingQnaId(newQId);
+                setCurrentTaskId(taskId);
+                setPendingQnaId(qId || null);
+                const recordedIdx = savedPendingMsg
+                  ? nextMsgs.findIndex(
+                    (m) =>
+                      m.from === "user" &&
+                      TEXT_NORM(m.text) ===
+                      TEXT_NORM(savedPendingMsg.text)
+                  )
+                  : -1;
+                setPendingUserMsgId(
+                  recordedIdx >= 0
+                    ? nextMsgs[recordedIdx].id
+                    : saved?.pendingUserMsgId ||
+                    savedPendingMsg?.id ||
+                    null
+                );
 
-                  const genIdx = nextMsgs.findIndex((m) => m.id === "pending-generic");
-                  if (newTaskId && genIdx >= 0) nextMsgs.splice(genIdx, 1);
-                  if (newTaskId) {
-                    nextMsgs.push({ id: `pending-${newTaskId}`, from: "bot", pending: true, text: "กำลังประมวลผล...", time: formatTS(Date.now()), tsNum: Date.now() });
+                await storage.setItem(
+                  STORAGE_PREFIX + String(chatId),
+                  JSON.stringify({
+                    sending: true,
+                    currentTaskId: taskId,
+                    pendingQnaId: qId || null,
+                    pendingUserMsgId:
+                      recordedIdx >= 0
+                        ? nextMsgs[recordedIdx].id
+                        : saved?.pendingUserMsgId ||
+                        savedPendingMsg?.id ||
+                        null,
+                    pendingUserMsg: savedPendingMsg || null,
+                    pendingUserMsgTs:
+                      savedPendingTs || Date.now(),
+                    savedAt: Date.now(),
+                  })
+                );
+
+                startPendingPoll({
+                  chatId,
+                  taskId,
+                  pendingQnaId: qId || null,
+                  pendingUserMsgId: saved.pendingUserMsgId || null,
+                  pendingUserMsg: savedPendingMsg || null,
+                });
+              } else {
+                if (
+                  savedPendingMsg &&
+                  !hasBotAfterPending &&
+                  !hasSameUserQRecorded
+                ) {
+                  try {
+                    if (
+                      !nextMsgs.some(
+                        (m) =>
+                          m.id === saved.pendingUserMsgId
+                      )
+                    ) {
+                      nextMsgs.push({
+                        id: savedPendingMsg.id,
+                        from: "user",
+                        text: toDisplayQuestionOnly(
+                          savedPendingMsg.text
+                        ),
+                        time:
+                          savedPendingMsg.time ||
+                          formatTS(
+                            savedPendingTs || Date.now()
+                          ),
+                        tsNum: savedPendingTs || Date.now(),
+                        pendingClient: true,
+                      });
+                    } else {
+                      const idx = nextMsgs.findIndex(
+                        (m) =>
+                          m.from === "user" &&
+                          TEXT_NORM(m.text) ===
+                          TEXT_NORM(savedPendingMsg.text)
+                      );
+                      if (idx >= 0) {
+                        nextMsgs[idx] = {
+                          ...nextMsgs[idx],
+                          pendingClient: true,
+                        };
+                        setPendingUserMsgId(nextMsgs[idx].id);
+                      }
+                    }
+
+                    const resp2 = await askQuestion({
+                      chatId,
+                      question: toDisplayQuestionOnly(
+                        savedPendingMsg.text
+                      ),
+                    });
+                    const newTaskId =
+                      resp2?.taskId ||
+                      resp2?.id ||
+                      resp2?.data?.taskId ||
+                      resp2?.data?.id ||
+                      null;
+                    const newQId =
+                      resp2?.qNaId ||
+                      resp2?.data?.qNaId ||
+                      resp2?.data?.savedRecordQuestion
+                        ?.qNaId ||
+                      resp2?.savedRecordQuestion?.qNaId ||
+                      resp2?.questionRecord?.qNaId ||
+                      null;
+
+                    setCurrentTaskId(newTaskId);
+                    setPendingQnaId(newQId);
+
+                    const genIdx = nextMsgs.findIndex(
+                      (m) => m.id === "pending-generic"
+                    );
+                    if (newTaskId && genIdx >= 0)
+                      nextMsgs.splice(genIdx, 1);
+                    if (newTaskId) {
+                      nextMsgs.push({
+                        id: `pending-${newTaskId}`,
+                        from: "bot",
+                        pending: true,
+                        text: "กำลังประมวลผล...",
+                        time: formatTS(Date.now()),
+                        tsNum: Date.now(),
+                      });
+                    }
+
+                    const recordedIdx = savedPendingMsg
+                      ? nextMsgs.findIndex(
+                        (m) =>
+                          m.from === "user" &&
+                          TEXT_NORM(m.text) ===
+                          TEXT_NORM(
+                            savedPendingMsg.text
+                          )
+                      )
+                      : -1;
+
+                    await storage.setItem(
+                      STORAGE_PREFIX + String(chatId),
+                      JSON.stringify({
+                        sending: true,
+                        currentTaskId: newTaskId,
+                        pendingQnaId: newQId,
+                        pendingUserMsgId:
+                          recordedIdx >= 0
+                            ? nextMsgs[recordedIdx].id
+                            : saved?.pendingUserMsgId ||
+                            savedPendingMsg?.id,
+                        pendingUserMsg: savedPendingMsg,
+                        pendingUserMsgTs: savedPendingTs,
+                        savedAt: Date.now(),
+                      })
+                    );
+
+                    if (newTaskId) {
+                      startPendingPoll({
+                        chatId,
+                        taskId: newTaskId,
+                        pendingQnaId: newQId || null,
+                        pendingUserMsgId:
+                          saved.pendingUserMsgId || null,
+                        pendingUserMsg: savedPendingMsg || null,
+                      });
+                    }
+                  } catch (eReask) {
+                    console.warn(
+                      "Re-ask failed:",
+                      eReask?.message || eReask
+                    );
                   }
-
-                  const recordedIdx = savedPendingMsg
-                    ? nextMsgs.findIndex((m) => m.from === "user" && TEXT_NORM(m.text) === TEXT_NORM(savedPendingMsg.text))
-                    : -1;
-
+                } else {
                   await storage.setItem(
                     STORAGE_PREFIX + String(chatId),
                     JSON.stringify({
-                      sending: true,
-                      currentTaskId: newTaskId,
-                      pendingQnaId: newQId,
-                      pendingUserMsgId: recordedIdx >= 0 ? nextMsgs[recordedIdx].id : saved?.pendingUserMsgId || savedPendingMsg?.id,
-                      pendingUserMsg: savedPendingMsg,
-                      pendingUserMsgTs: savedPendingTs,
+                      sending: false,
                       savedAt: Date.now(),
                     })
                   );
-
-                  if (newTaskId) {
-                    startPendingPoll({ chatId, taskId: newTaskId, pendingQnaId: newQId || null, pendingUserMsgId: saved.pendingUserMsgId || null, pendingUserMsg: savedPendingMsg || null });
-                  }
-                } catch (eReask) {
-                  console.warn("Re-ask failed:", eReask?.message || eReask);
+                  setSending(false);
+                  setShowStop(false);
+                  setCurrentTaskId(null);
+                  setPendingQnaId(null);
+                  setPendingUserMsgId(null);
                 }
-              } else {
-                await storage.setItem(STORAGE_PREFIX + String(chatId), JSON.stringify({ sending: false, savedAt: Date.now() }));
-                setSending(false);
-                setShowStop(false);
-                setCurrentTaskId(null);
-                setPendingQnaId(null);
-                setPendingUserMsgId(null);
               }
             }
           }
         }
       }
 
-      nextMsgs.sort((a, b) => (a.tsNum || 0) - (b.tsNum || 0));
+      nextMsgs.sort(
+        (a, b) => (a.tsNum || 0) - (b.tsNum || 0)
+      );
       setMessages(nextMsgs);
+      shouldScrollRef.current = true;
     } catch (err) {
       console.error("loadHistory error:", err);
       notify("ผิดพลาด", "ไม่สามารถโหลดประวัติแชตได้");
       setMessages([]);
+      shouldScrollRef.current = true;
     } finally {
       setLoadingHistory(false);
       persistSuspendedRef.current = false;
     }
   };
+
 
   useEffect(() => { if (selectedChatId) storage.setItem(LAST_CHAT_ID_KEY, String(selectedChatId)); }, [selectedChatId]);
   useEffect(() => { if (!user) { setChats([]); setSelectedChatId(null); setMessages([]); return; } loadUserChats(); }, [user]);
