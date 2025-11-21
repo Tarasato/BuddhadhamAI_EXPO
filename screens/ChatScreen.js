@@ -172,12 +172,7 @@ const MessageItem = ({ item, isDark, styles: S }) => {
                 blockquote: S.mdBlockquote
               }}
             >
-              {item.text
-                .replace(/\|([^|]*)<br\s*\/?>([^|]*)\|/gi, (match, p1, p2) => {
-                  return `|${p1}  \n${p2}|`;
-                })
-                .replace(/<br\s*\/?>/gi, "\n")
-              }
+              {item.text}
             </Markdown>
           )}
         </View>
