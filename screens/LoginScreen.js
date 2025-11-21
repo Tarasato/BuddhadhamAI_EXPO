@@ -108,12 +108,13 @@ export default function LoginScreen({ navigation }) {
         <Text style={{ color: C.chipText, fontSize: 12 }}>{isDark ? "Dark" : "Light"}</Text>
       </TouchableOpacity>
 
+      {/* =============== Content =============== */}
       <View style={styles.contentWrapper}>
         <View style={[styles.card, { backgroundColor: C.cardBg, borderColor: C.cardBorder, shadowColor: C.shadow }]}>
           <Text style={[styles.title, { color: "#111" }]}>ลงชื่อเข้าใช้</Text>
 
           {!!error && <Text style={[styles.errorText, { color: C.errorText }]}>{error}</Text>}
-
+          {/* =============== Input =============== */}
           <TextInput
             style={[styles.input, { backgroundColor: C.fieldBg, color: C.fieldText, borderColor: C.cardBorder }]}
             placeholder="อีเมลหรือชื่อผู้ใช้"

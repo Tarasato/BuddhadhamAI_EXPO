@@ -117,13 +117,13 @@ export default function RegisterScreen({ navigation }) {
         <Ionicons name={isDark ? "moon" : "sunny"} size={16} color={C.chipText} style={{ marginRight: 6 }} />
         <Text style={{ color: C.chipText, fontSize: 12 }}>{isDark ? "Dark" : "Light"}</Text>
       </TouchableOpacity>
-
+      {/* =============== Content =============== */}
       <View style={styles.contentWrapper}>
         <View style={[styles.card, { backgroundColor: C.cardBg, borderColor: C.cardBorder, shadowColor: C.shadow }]}>
           <Text style={[styles.title, { color: "#111" }]}>ลงทะเบียน</Text>
 
           {!!error && <Text style={[styles.errorText, { color: C.errorText }]}>{error}</Text>}
-
+          {/* =============== Input =============== */}
           <TextInput
             style={[styles.input, { backgroundColor: C.fieldBg, color: C.fieldText, borderColor: C.cardBorder }]}
             placeholder="ชื่อผู้ใช้"
