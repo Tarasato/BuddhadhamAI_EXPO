@@ -1290,20 +1290,7 @@ export default function ChatScreen({ navigation }) {
 
     addPendingBotBubble(null);
 
-    if (chatIdToUse) {
-      storage.setItem(
-        STORAGE_PREFIX + String(chatIdToUse),
-        JSON.stringify({
-          sending: true,
-          currentTaskId: null,
-          pendingQnaId: null,
-          pendingUserMsgId: userMsg.id,
-          pendingUserMsg: userMsg,
-          pendingUserMsgTs: now,
-          savedAt: now,
-        })
-      );
-    }
+    
 
     try {
       const resp = await askQuestion({ chatId: user ? chatIdToUse : undefined, question: fullQuestion, dbSaveHint });
