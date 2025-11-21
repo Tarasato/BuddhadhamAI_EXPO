@@ -116,7 +116,7 @@ export default function LoginScreen({ navigation }) {
 
           <TextInput
             style={[styles.input, { backgroundColor: C.fieldBg, color: C.fieldText, borderColor: C.cardBorder }]}
-            placeholder="อีเมล"
+            placeholder="อีเมลหรือชื่อผู้ใช้"
             placeholderTextColor={C.fieldPlaceholder}
             autoCapitalize="none"
             keyboardType="email-address"

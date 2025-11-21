@@ -1610,10 +1610,25 @@ export default function ChatScreen({ navigation }) {
                 ListFooterComponent={<View style={S.footerExtraGap} />}
                 keyboardShouldPersistTaps="handled"
                 onContentSizeChange={() => {
+                  if (!shouldScrollRef.current) return;
                   requestAnimationFrame(() => {
-                    scrollToBottom(false, false);
+                    scrollToBottom(false, true);
                   });
                 }}
+                onScrollBeginDrag={() => {
+                  shouldScrollRef.current = false;
+                }}
+                onScroll={(e) => {
+                  const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+                  const paddingToBottom = 40;
+                  const isAtBottom =
+                    contentOffset.y + layoutMeasurement.height >= contentSize.height - paddingToBottom;
+
+                  if (isAtBottom) {
+                    shouldScrollRef.current = true;
+                  }
+                }}
+                scrollEventThrottle={16}
               />
             )}
 
